@@ -1,0 +1,16 @@
+{
+  "name": "instagram-reel-downloader",
+  "version": "1.0.0",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.0.0",
+    "morgan": "^1.10.0",
+    "node-fetch": "^2.6.7",
+    "express-rate-limit": "^6.7.0",
+    "dotenv": "^16.0.0"
+  }
+}

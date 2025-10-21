@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>IG Reel Downloader</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        :root {
+            --bg: #000;
+            --fg: #fff;
+            --border: #444;
+            --muted: #aaa
+        }
+
+        * {
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .card {
+            width: 90%;
+            max-width: 720px;
+            padding: 20px;
+            border: 2px solid var(--border);
+            background: #111;
+        }
+
+        input[type=text] {
+            width: 100%;
+            padding: 12px;
+            background: #000;
+            color: var(--fg);
+            border: 2px solid var(--border);
+            font-size: 15px;
+        }
+
+        .row {
+            margin-top: 10px;
+            display: flex;
+            gap: 8px;
+        }
+
+        button {
+            padding: 10px 16px;
+            background: var(--fg);
+            color: var(--bg);
+            border: none;
+            cursor: pointer;
+            text-transform: uppercase;
+        }
+
+        button[disabled] {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        #log {
+            margin-top: 12px;
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            border: 2px solid var(--border);
+            min-height: 24px;
+            white-space: pre-line;
+        }
+
+        video {
+            margin-top: 12px;
+            width: 100%;
+            border: 2px solid var(--border);
+            display: block;
+        }
+
+        label {
+            color: var(--muted);
+            font-size: 13px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 8px;
+        }
+
+        a.small {
+            color: var(--muted);
+            font-size: 12px;
+            text-decoration: underline;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h2>Reeva — Smart, simple, and lightning-fast reel downloader</h2>
+        <p style="margin-top:10px; color:#ccc; font-size:15px; line-height:1.6;">
+            Reeva is a lightweight web app that helps you save public Instagram Reels in seconds.
+            It’s fast, beautifully minimal, and focused on what matters most — simplicity and speed.<br>
+            <i>We never store or host any media; your downloads remain private, secure, and entirely yours.</i>
+        </p>
+
+        <p style="color:var(--muted)">Paste a public Instagram Reel link and click <strong>Get</strong>. Check the box
+            to confirm you own or have permission to download the content.<br><br>
+            PLEASE PASTE YOUR REEL LINK BELOW:</p>
+
+        <input id="url" type="text" placeholder="https://www.instagram.com/reel/SHORTCODE/" />
+        <div class="row">
+            <button id="get" disabled>Get</button>
+            <button id="download" style="display:none">Download</button>
+            <span id="source" style="align-self:center;color:var(--muted);font-size:13px;"></span>
+        </div>
+        <p style="font-size:12px; color:#888; margin-top:20px;">
+            Disclaimer: This tool is for personal and educational use only.
+            We do not host or store any Instagram content.
+            All rights belong to their respective owners.
+        </p>
+
+        <label><input id="consent" type="checkbox"> I confirm I own this content or have permission to download it. <a
+                class="small" href="#"
+                onclick="alert('Do not use to download other peoples content without permission.');return false;">Why?</a></label>
+        <div id="log"></div>
+        <video id="preview" controls style="display:none"></video>
+    </div>
+
+    <script>
+        const getBtn = document.getElementById('get');
+        const downloadBtn = document.getElementById('download');
+        const urlIn = document.getElementById('url');
+        const log = document.getElementById('log');
+        const preview = document.getElementById('preview');
+        const consent = document.getElementById('consent');
+        const sourceSpan = document.getElementById('source');
+        let directUrl = '';
+
+        consent.onchange = () => {
+            getBtn.disabled = !consent.checked;
+        };
+
+        getBtn.onclick = async () => {
+            log.textContent = 'Fetching...';
+            preview.style.display = 'none';
+            downloadBtn.style.display = 'none';
+            sourceSpan.textContent = '';
+            try {
+                const u = urlIn.value.trim();
+                if (!u) { log.textContent = 'Paste a reel URL.'; return; }
+                const resp = await fetch(`/api/get-video?url=${encodeURIComponent(u)}`);
+                const json = await resp.json();
+                if (!resp.ok) {
+                    log.textContent = '❌ ' + (json.error || 'Error');
+                    return;
+                }
+                directUrl = json.videoUrl;
+                sourceSpan.textContent = json.source ? `(${json.source})` : '';
+                log.textContent = '✅ Direct video URL found.';
+                preview.src = directUrl;
+                preview.style.display = 'block';
+                downloadBtn.style.display = 'inline-block';
+            } catch (e) {
+                log.textContent = '⚠️ Error: ' + e.message;
+            }
+        };
+
+        downloadBtn.onclick = () => {
+            if (!directUrl) return;
+            const proxyUrl = `/api/proxy?url=${encodeURIComponent(directUrl)}`;
+            window.open(proxyUrl, '_blank');
+        };
+    </script>
+</body>
+
+</html>
