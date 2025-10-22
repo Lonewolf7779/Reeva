@@ -6,11 +6,16 @@
     "start": "node server.cjs"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "helmet": "^7.0.0",
-    "morgan": "^1.10.0",
-    "node-fetch": "^2.6.7",
-    "express-rate-limit": "^6.7.0",
-    "dotenv": "^16.0.0"
+    "@sasmeee/igdl": "^0.0.1-security",
+    "@totallynodavid/downloader": "^2.0.1",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "express-rate-limit": "^6.11.2",
+    "helmet": "^7.2.0",
+    "instagram-url-direct": "^2.0.7",
+    "morgan": "^1.10.1",
+    "node-fetch": "^2.7.0",
+    "pinterest-dl": "^1.0.1",
+    "twitter-downloader": "^1.1.8"
   }
 }
