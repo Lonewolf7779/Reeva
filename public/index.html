@@ -3,24 +3,30 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>IG Reel Downloader</title>
+    <title>Reeva — Universal Reel Downloader</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
         :root {
-            --bg: #000;
-            --fg: #fff;
-            --border: #444;
-            --muted: #aaa
+            --bg: #0e0e10;
+            --card-bg: #151518;
+            --accent: #7f5af0;
+            --accent-hover: #9c7eff;
+            --text: #ffffff;
+            --muted: #9f9f9f;
+            --border: #2c2c2f;
+            --success: #00ff99;
+            --error: #ff4b4b;
         }
 
         * {
             box-sizing: border-box;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            font-family: 'Inter', system-ui, sans-serif;
+            transition: all 0.2s ease-in-out;
         }
 
         body {
-            background: var(--bg);
-            color: var(--fg);
+            background: radial-gradient(circle at top left, #1a1a1d, #0e0e10 80%);
+            color: var(--text);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -30,56 +36,112 @@
 
         .card {
             width: 90%;
-            max-width: 720px;
-            padding: 20px;
-            border: 2px solid var(--border);
-            background: #111;
+            max-width: 740px;
+            padding: 26px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--card-bg);
+            box-shadow: 0 0 18px rgba(127, 90, 240, 0.08);
+        }
+
+        h2 {
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.4rem;
+            color: var(--accent);
+            margin-bottom: 8px;
+        }
+
+        p {
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        #platforms {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin: 18px 0;
+        }
+
+        .platform-btn {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            letter-spacing: 0.5px;
+            transition: 0.25s;
+        }
+
+        .platform-btn:hover {
+            background: var(--accent-hover);
+            color: #fff;
+            transform: translateY(-2px);
+        }
+
+        .platform-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            box-shadow: 0 0 12px rgba(127, 90, 240, 0.5);
         }
 
         input[type=text] {
             width: 100%;
             padding: 12px;
-            background: #000;
-            color: var(--fg);
-            border: 2px solid var(--border);
+            border-radius: 8px;
+            background: #0b0b0c;
+            border: 1px solid var(--border);
+            color: var(--text);
             font-size: 15px;
+            outline: none;
         }
 
         .row {
-            margin-top: 10px;
+            margin-top: 12px;
             display: flex;
-            gap: 8px;
+            gap: 10px;
         }
 
-        button {
-            padding: 10px 16px;
-            background: var(--fg);
-            color: var(--bg);
+        button.action {
+            flex: 1;
+            padding: 12px;
+            font-size: 14px;
+            text-transform: uppercase;
+            border-radius: 8px;
             border: none;
             cursor: pointer;
-            text-transform: uppercase;
+            background: var(--accent);
+            color: #fff;
+            font-weight: 600;
         }
 
-        button[disabled] {
-            opacity: 0.4;
-            cursor: not-allowed;
+        button.action:hover {
+            background: var(--accent-hover);
         }
 
         #log {
-            margin-top: 12px;
-            background: #000;
-            color: #0f0;
+            margin-top: 14px;
             padding: 10px;
-            border: 2px solid var(--border);
-            min-height: 24px;
+            border-radius: 8px;
+            min-height: 26px;
+            background: #0b0b0c;
+            border: 1px solid var(--border);
+            color: var(--success);
+            font-size: 14px;
             white-space: pre-line;
         }
 
         video {
             margin-top: 12px;
             width: 100%;
-            border: 2px solid var(--border);
-            display: block;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            display: none;
         }
 
         label {
@@ -88,48 +150,59 @@
             display: flex;
             gap: 8px;
             align-items: center;
-            margin-top: 8px;
+            margin-top: 10px;
         }
 
         a.small {
-            color: var(--muted);
+            color: var(--accent-hover);
             font-size: 12px;
             text-decoration: underline;
             margin-left: 8px;
+        }
+
+        footer {
+            font-size: 12px;
+            color: var(--muted);
+            text-align: center;
+            margin-top: 18px;
         }
     </style>
 </head>
 
 <body>
     <div class="card">
-        <h2>Reeva — Smart, simple, and lightning-fast reel downloader</h2>
-        <p style="margin-top:10px; color:#ccc; font-size:15px; line-height:1.6;">
-            Reeva is a lightweight web app that helps you save public Instagram Reels in seconds.
-            It’s fast, beautifully minimal, and focused on what matters most — simplicity and speed.<br>
-            <i>We never store or host any media; your downloads remain private, secure, and entirely yours.</i>
-        </p>
+        <h2>Reeva — Smart, simple, and lightning-fast downloader</h2>
+        <p>Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
 
-        <p style="color:var(--muted)">Paste a public Instagram Reel link and click <strong>Get</strong>. Check the box
-            to confirm you own or have permission to download the content.<br><br>
-            PLEASE PASTE YOUR REEL LINK BELOW:</p>
-
-        <input id="url" type="text" placeholder="https://www.instagram.com/reel/SHORTCODE/" />
-        <div class="row">
-            <button id="get" disabled>Get</button>
-            <button id="download" style="display:none">Download</button>
-            <span id="source" style="align-self:center;color:var(--muted);font-size:13px;"></span>
+        <!-- Platform Selector -->
+        <div id="platforms">
+            <button class="platform-btn active" data-platform="instagram">Instagram</button>
+            <button class="platform-btn" data-platform="facebook">Facebook</button>
+            <button class="platform-btn" data-platform="twitter">Twitter (X)</button>
+            <button class="platform-btn" data-platform="pinterest">Pinterest</button>
+            <button class="platform-btn" data-platform="whatsapp">WhatsApp</button>
         </div>
-        <p style="font-size:12px; color:#888; margin-top:20px;">
-            Disclaimer: This tool is for personal and educational use only.
-            We do not host or store any Instagram content.
-            All rights belong to their respective owners.
-        </p>
 
-        <label><input id="consent" type="checkbox"> I confirm I own this content or have permission to download it. <a
-                class="small" href="#"
-                onclick="alert('Do not use to download other peoples content without permission.');return false;">Why?</a></label>
+        <p style="color:var(--muted); text-align:center;">Paste your link below and click <b>Get</b>.</p>
+        <input id="url" type="text" placeholder="Paste your video link here..." />
+
+        <div class="row">
+            <button id="get" class="action" disabled>Get</button>
+            <button id="download" class="action" style="display:none">Download</button>
+        </div>
+
+        <label><input id="consent" type="checkbox">
+            I confirm I own or have permission to download this content.
+            <a class="small" href="#" onclick="alert('Use only for public or your own content.');return false;">Why?</a>
+        </label>
+
         <div id="log"></div>
-        <video id="preview" controls style="display:none"></video>
+        <video id="preview" controls></video>
+
+        <footer>
+            Disclaimer: This tool is for personal and educational use only.<br>
+            We never store or host media. All rights belong to their respective owners.
+        </footer>
     </div>
 
     <script>
@@ -139,8 +212,18 @@
         const log = document.getElementById('log');
         const preview = document.getElementById('preview');
         const consent = document.getElementById('consent');
-        const sourceSpan = document.getElementById('source');
+        const platformBtns = document.querySelectorAll('.platform-btn');
+        let currentPlatform = 'instagram';
         let directUrl = '';
+
+        platformBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                platformBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentPlatform = btn.dataset.platform;
+                log.textContent = `Selected: ${currentPlatform}`;
+            });
+        });
 
         consent.onchange = () => {
             getBtn.disabled = !consent.checked;
@@ -150,23 +233,27 @@
             log.textContent = 'Fetching...';
             preview.style.display = 'none';
             downloadBtn.style.display = 'none';
-            sourceSpan.textContent = '';
             try {
                 const u = urlIn.value.trim();
-                if (!u) { log.textContent = 'Paste a reel URL.'; return; }
-                const resp = await fetch(`/api/get-video?url=${encodeURIComponent(u)}`);
-                const json = await resp.json();
-                if (!resp.ok) {
-                    log.textContent = '❌ ' + (json.error || 'Error');
+                if (!u) {
+                    log.textContent = 'Paste a link first.';
                     return;
                 }
-                directUrl = json.videoUrl;
-                sourceSpan.textContent = json.source ? `(${json.source})` : '';
+                const resp = await fetch(`/api/download/${currentPlatform}?url=${encodeURIComponent(u)}`);
+                const json = await resp.json();
+                if (!resp.ok) {
+                    log.style.color = 'var(--error)';
+                    log.textContent = '❌ ' + (json.error || 'Error fetching video');
+                    return;
+                }
+                log.style.color = 'var(--success)';
                 log.textContent = '✅ Direct video URL found.';
+                directUrl = json.videoUrl;
                 preview.src = directUrl;
                 preview.style.display = 'block';
                 downloadBtn.style.display = 'inline-block';
             } catch (e) {
+                log.style.color = 'var(--error)';
                 log.textContent = '⚠️ Error: ' + e.message;
             }
         };
