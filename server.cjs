@@ -4,6 +4,8 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const fetch = require("node-fetch"); // v2 for CommonJS
+const ytdl = require("ytdl-core");
+const ytdl_exec = require("@distube/ytdl-core"); // backup parser
 require("dotenv").config();
 
 const app = express();
@@ -83,44 +85,87 @@ function extractMediaFromHtml(html) {
 
 // --- Instagram ---
 async function getInstagramMedia(url) {
-    if (!/instagram\.com/i.test(url)) throw new Error("Please enter a valid Instagram link.");
+    console.log("🕵️‍♂️ [Instagram] Starting extraction for:", url);
 
+    if (!/instagram\.com/i.test(url))
+        throw new Error("❌ Please enter a valid Instagram link.");
+
+    // 🟢 Cache check
     const cached = cache.get(url);
-    if (cached && cached.expiresAt > Date.now()) return cached.result;
+    if (cached && cached.expiresAt > Date.now()) {
+        console.log("📦 Returning cached Instagram result");
+        return cached.result;
+    }
 
-    // Try @sasmeee/igdl
+    // 🟢 Try local module first (igdl or instagram-url-direct)
     try {
-        const result = await localModules.instagram(url);
-        if (result?.url) {
-            const res = { url: result.url, type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
-            return res;
+        if (localModules.instagramAlt) {
+            const result = await localModules.instagramAlt(url);
+            if (result && result.url) {
+                const res = { url: result.url, type: "video" };
+                cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+                console.log("✅ Instagram media found via local module:", res.url);
+                return res;
+            }
         }
-    } catch (e) { console.warn("IGDL failed:", e.message); }
+    } catch (e) {
+        console.warn("⚠️ Instagram local module failed:", e.message);
+    }
 
-    // Try instagram-url-direct
-    try {
-        const result = await localModules.instagramAlt(url);
-        if (result && result.url_list && result.url_list.length) {
-            const res = { url: result.url_list[0], type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
-            return res;
-        }
-    } catch (e) { console.warn("instagram-url-direct failed:", e.message); }
-
-    // HTML fallback
+    // 🟢 HTML Extraction (new patterns)
     try {
         const html = await fetchPage(url);
-        const match = html.match(/"video_url":"([^"]+)"/);
-        if (match && match[1]) {
-            const res = { url: match[1].replace(/\\u0026/g, "&"), type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
+        const decode = s => s?.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
+
+        // --- 1️⃣ Look for video_versions JSON ---
+        const match1 = html.match(/"video_versions":\[\{"type":[^}]*"url":"([^"]+)"/);
+        if (match1 && match1[1]) {
+            const link = decode(match1[1]);
+            console.log("✅ Found via video_versions pattern:", link);
+            const res = { url: link, type: "video" };
+            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
             return res;
         }
-    } catch (e) { console.warn("Instagram HTML fallback failed:", e.message); }
 
-    throw new Error("Reeva couldn’t find a downloadable video. Make sure the post is public.");
+        // --- 2️⃣ Look for display_resources (images fallback) ---
+        const match2 = html.match(/"display_resources":\[\{"src":"([^"]+)"/);
+        if (match2 && match2[1]) {
+            const link = decode(match2[1]);
+            console.log("✅ Found via display_resources pattern:", link);
+            const res = { url: link, type: "image" };
+            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            return res;
+        }
+
+        // --- 3️⃣ Fallback meta tags ---
+        const match3 = html.match(/<meta property="og:video" content="([^"]+)"/);
+        if (match3 && match3[1]) {
+            const link = decode(match3[1]);
+            console.log("✅ Found via og:video meta tag:", link);
+            const res = { url: link, type: "video" };
+            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            return res;
+        }
+
+        // --- 4️⃣ Last resort (display_url meta) ---
+        const match4 = html.match(/<meta property="og:image" content="([^"]+)"/);
+        if (match4 && match4[1]) {
+            const link = decode(match4[1]);
+            console.log("✅ Found via og:image fallback:", link);
+            const res = { url: link, type: "image" };
+            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            return res;
+        }
+
+        console.warn("⚠️ No media found in HTML for Instagram post.");
+    } catch (e) {
+        console.warn("⚠️ Instagram HTML extraction failed:", e.message);
+    }
+
+    // 🟢 Final fallback
+    throw new Error("❌ Reeva couldn’t find any downloadable media for this Instagram post. Please make sure it’s public and contains a visible video or image.");
 }
+
 
 // --- Facebook (public only) ---
 async function getFacebookMedia(url) {
@@ -175,6 +220,59 @@ async function getTwitterMedia(url) {
 
     throw new Error("Reeva couldn’t find a playable video. Make sure the tweet is public and contains a video.");
 }
+
+async function getYouTubeMedia(url) {
+    if (!/youtube\.com|youtu\.be/i.test(url))
+        throw new Error("Please enter a valid YouTube link.");
+
+    console.log("🎥 Fetching YouTube media for:", url);
+
+    try {
+        let info;
+        try {
+            // 🧠 Try standard ytdl-core first
+            info = await ytdl.getInfo(url);
+        } catch (err) {
+            console.warn("⚠️ Primary ytdl-core failed:", err.message);
+            console.log("🧩 Trying backup parser...");
+            info = await ytdl_exec.getInfo(url);
+        }
+
+        if (!info || !info.formats) throw new Error("Could not retrieve video details.");
+
+        console.log("🎬 Title:", info.videoDetails?.title || "Untitled");
+        console.log("🧾 Total formats:", info.formats?.length || 0);
+
+        // ✅ Try for MP4 with both audio + video first
+        let format =
+            info.formats.find(f => f.hasVideo && f.hasAudio && f.container === "mp4") ||
+            info.formats.find(f => f.hasVideo && f.container === "mp4") ||
+            info.formats.find(f => f.mimeType && f.mimeType.includes("video"));
+
+        if (!format || !format.url) {
+            console.warn("⚠️ No valid downloadable format found, showing keys:");
+            console.log(Object.keys(info.formats[0] || {}));
+            throw new Error("Reeva couldn’t find a downloadable YouTube stream.");
+        }
+
+        console.log(`✅ YouTube format chosen: ${format.qualityLabel || "unknown"} (${format.container})`);
+
+        const result = {
+            url: format.url,
+            type: "video",
+            title: info.videoDetails?.title || "Reeva YouTube Video"
+        };
+
+        cache.set(url, { result, expiresAt: Date.now() + 10 * 60 * 1000 });
+        return result;
+
+    } catch (err) {
+        console.error("❌ YouTube fetch failed:", err.message);
+        throw new Error("Reeva couldn’t get a video from YouTube. Make sure it’s public and not restricted.");
+    }
+}
+
+
 
 // --- Pinterest ---
 async function getPinterestMedia(url) {
@@ -258,6 +356,9 @@ app.get("/api/download/:platform", async (req, res) => {
             case "twitter":
             case "x": result = await getTwitterMedia(url); break;
             case "pinterest": result = await getPinterestMedia(url); break;
+            case "youtube":
+                result = await getYouTubeMedia(url);
+                break;
             case "whatsapp": return res.status(501).json({ error: "WhatsApp download is not available." });
             default: return res.status(400).json({ error: "This platform is not supported yet." });
         }
@@ -277,24 +378,64 @@ Make sure it's public and contains a video or image.`
 });
 
 // ================== PROXY ENDPOINT ==================
+// ⚔️ Smart Proxy Endpoint — auto-refresh expired Instagram tokens
 app.get("/api/proxy", async (req, res) => {
     try {
-        const { url } = req.query;
-        if (!url) return res.status(400).send("Missing media URL.");
+        const { url, original } = req.query;
+        if (!url) return res.status(400).send("Missing URL");
 
-        const proxied = await fetch(url, {
-            headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.instagram.com/" }
+        console.log("🌍 Proxying media:", url);
+
+        // 🧠 Always refresh for Instagram CDN links
+        if (/scontent\.cdninstagram\.com/i.test(url) && original) {
+            console.log("🔁 Refreshing Instagram token before fetch...");
+            const refreshed = await getInstagramMedia(original);
+            if (refreshed?.url) {
+                console.log("✅ Got fresh Instagram media URL:", refreshed.url);
+                return res.redirect(`/api/proxy?url=${encodeURIComponent(refreshed.url)}`);
+            } else {
+                throw new Error("Could not refresh Instagram video link.");
+            }
+        }
+
+        const response = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.instagram.com/",
+                "Origin": "https://www.instagram.com/",
+                "Connection": "keep-alive"
+            },
+            redirect: "follow"
         });
-        if (!proxied.ok) return res.status(502).send("Could not fetch media from source.");
 
-        res.setHeader("Content-Type", proxied.headers.get("content-type") || "application/octet-stream");
-        res.setHeader("Content-Disposition", 'attachment; filename="media"');
-        proxied.body.pipe(res);
+        if (!response.ok) {
+            console.error("❌ Proxy fetch failed:", response.status, response.statusText);
+            return res.status(502).send(`Could not fetch media from source (HTTP ${response.status}).`);
+        }
+
+        if (/googlevideo\.com/i.test(url)) {
+            console.log("🎬 Proxying YouTube CDN link...");
+            res.setHeader("Content-Disposition", 'inline; filename="reeva_youtube.mp4"');
+        } else {
+            res.setHeader("Content-Disposition", 'inline; filename="reeva_instagram.mp4"');
+        }
+
+
+
+        const contentType = response.headers.get("content-type") || "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", "inline; filename=reeva_instagram.mp4");
+        res.setHeader("Cache-Control", "no-cache");
+
+        response.body.pipe(res);
     } catch (err) {
-        console.error("Proxy error:", err.message);
-        res.status(500).send("An error occurred while fetching the video.");
+        console.error("❌ Proxy error:", err.message);
+        res.status(500).send("Proxy error — failed to retrieve media stream.");
     }
 });
+
 
 // ================== START SERVER ==================
 app.listen(PORT, () => {

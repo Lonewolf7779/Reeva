@@ -6,6 +6,7 @@
     "start": "node server.cjs"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "@sasmeee/igdl": "^0.0.1-security",
     "@totallynodavid/downloader": "^2.0.1",
     "dotenv": "^16.6.1",
@@ -16,6 +17,7 @@
     "morgan": "^1.10.1",
     "node-fetch": "^2.7.0",
     "pinterest-dl": "^1.0.1",
-    "twitter-downloader": "^1.1.8"
+    "twitter-downloader": "^1.1.8",
+    "ytdl-core": "^4.11.5"
   }
 }

@@ -180,6 +180,7 @@
             <button class="platform-btn" data-platform="facebook">Facebook</button>
             <button class="platform-btn" data-platform="twitter">Twitter (X)</button>
             <button class="platform-btn" data-platform="pinterest">Pinterest</button>
+            <button class="platform-btn" data-platform="youtube">YouTube</button>
         </div>
 
         <p style="color:var(--muted); text-align:center;">Paste your link below and click <b>Get</b>.</p>
@@ -273,7 +274,7 @@
 
         downloadBtn.onclick = () => {
             if (!directUrl) return;
-            const proxyUrl = `/api/proxy?url=${encodeURIComponent(directUrl)}`;
+            const proxyUrl = `/api/proxy?url=${encodeURIComponent(directUrl)}&original=${encodeURIComponent(urlIn.value.trim())}`;
             window.open(proxyUrl, '_blank');
         };
     </script>
