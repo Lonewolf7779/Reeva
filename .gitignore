@@ -1,2 +1,45 @@
-node_modules
+# Ignore everything in node_modules everywhere
+**/node_modules/
 .env
+
+# ======================
+# Node.js + Reeva Project .gitignore
+# ======================
+
+# Dependency directories
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables / secret files
+.env
+.env.local
+.env.*.local
+
+# Build and cache directories
+dist/
+build/
+cache/
+.tmp/
+.temp/
+logs/
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Auto-generated / runtime files
+public/js/generated/
+*.min.js
+17612334*.js
+*.cache.js
+*.map
+
+# Misc
+*.zip
+*.bak
+*.old

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Reeva — Universal Reel Downloader</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        :root {
+            --bg: #0e0e10;
+            --card-bg: #151518;
+            --accent: #7f5af0;
+            --accent-hover: #9c7eff;
+            --text: #ffffff;
+            --muted: #9f9f9f;
+            --border: #2c2c2f;
+            --success: #00ff99;
+            --error: #ff4b4b;
+        }
+
+        * {
+            box-sizing: border-box;
+            font-family: 'Inter', system-ui, sans-serif;
+            transition: all 0.2s ease-in-out;
+        }
+
+        body {
+            background: radial-gradient(circle at top left, #1a1a1d, #0e0e10 80%);
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .card {
+            width: 90%;
+            max-width: 740px;
+            padding: 26px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--card-bg);
+            box-shadow: 0 0 18px rgba(127, 90, 240, 0.08);
+        }
+
+        h2 {
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.4rem;
+            color: var(--accent);
+            margin-bottom: 8px;
+        }
+
+        p {
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        #platforms {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin: 18px 0;
+        }
+
+        .platform-btn {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            letter-spacing: 0.5px;
+            transition: 0.25s;
+        }
+
+        .platform-btn:hover {
+            background: var(--accent-hover);
+            color: #fff;
+            transform: translateY(-2px);
+        }
+
+        .platform-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            box-shadow: 0 0 12px rgba(127, 90, 240, 0.5);
+        }
+
+        input[type=text] {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            background: #0b0b0c;
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 15px;
+            outline: none;
+        }
+
+        .row {
+            margin-top: 12px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button.action {
+            flex: 1;
+            padding: 12px;
+            font-size: 14px;
+            text-transform: uppercase;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fff;
+            font-weight: 600;
+        }
+
+        button.action:hover {
+            background: var(--accent-hover);
+        }
+
+        #log {
+            margin-top: 14px;
+            padding: 10px;
+            border-radius: 8px;
+            min-height: 26px;
+            background: #0b0b0c;
+            border: 1px solid var(--border);
+            color: var(--success);
+            font-size: 14px;
+            white-space: pre-line;
+        }
+
+        video {
+            margin-top: 12px;
+            width: 100%;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            display: none;
+        }
+
+        label {
+            color: var(--muted);
+            font-size: 13px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        a.small {
+            color: var(--accent-hover);
+            font-size: 12px;
+            text-decoration: underline;
+            margin-left: 8px;
+        }
+
+        footer {
+            font-size: 12px;
+            color: var(--muted);
+            text-align: center;
+            margin-top: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h2>Reeva — Smart, simple, and lightning-fast downloader</h2>
+        <p>Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+
+        <!-- Platform Selector -->
+        <div id="platforms">
+            <button class="platform-btn active" data-platform="instagram">Instagram</button>
+            <button class="platform-btn" data-platform="facebook">Facebook</button>
+            <button class="platform-btn" data-platform="twitter">Twitter (X)</button>
+            <button class="platform-btn" data-platform="pinterest">Pinterest</button>
+            <button class="platform-btn" data-platform="youtube">YouTube</button>
+        </div>
+
+        <p style="color:var(--muted); text-align:center;">Paste your link below and click <b>Get</b>.</p>
+        <input id="url" type="text" placeholder="Paste your video link here..." />
+
+        <div class="row">
+            <button id="get" class="action">Get</button>
+            <button id="download" class="action" style="display:none">Download</button>
+        </div>
+
+        <label>
+            <input id="consent" type="checkbox">
+            I confirm I own or have permission to download this content.
+            <a class="small" href="#" onclick="alert('Use only for public or your own content.');return false;">Why?</a>
+        </label>
+
+        <div id="log"></div>
+        <video id="preview" controls></video>
+
+        <footer>
+            Disclaimer: This tool is for personal and educational use only.<br>
+            We never store or host media. All rights belong to their respective owners.
+        </footer>
+    </div>
+
+    <script>
+        const getBtn = document.getElementById('get');
+        const downloadBtn = document.getElementById('download');
+        const urlIn = document.getElementById('url');
+        const log = document.getElementById('log');
+        const preview = document.getElementById('preview');
+        const consent = document.getElementById('consent');
+        const platformBtns = document.querySelectorAll('.platform-btn');
+        let currentPlatform = 'instagram';
+        let directUrl = '';
+
+        platformBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                platformBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentPlatform = btn.dataset.platform;
+                log.textContent = `Selected: ${currentPlatform}`;
+            });
+        });
+
+        getBtn.onclick = async () => {
+            const u = urlIn.value.trim();
+            if (!consent.checked) {
+                alert("Please check the confirmation box before downloading.");
+                return;
+            }
+            if (!u) {
+                log.style.color = 'var(--error)';
+                log.textContent = '⚠️ Please paste a video link first.';
+                return;
+            }
+
+            log.style.color = 'var(--muted)';
+            log.textContent = 'Fetching video... please wait.';
+            preview.style.display = 'none';
+            downloadBtn.style.display = 'none';
+
+            try {
+                const resp = await fetch(`/api/download/${currentPlatform}?url=${encodeURIComponent(u)}`);
+                const json = await resp.json();
+
+                if (!resp.ok) {
+                    log.style.color = 'var(--error)';
+                    log.textContent = '❌ ' + (json.error || 'Something went wrong. Please try again.');
+                    return;
+                }
+
+                directUrl = json.videoUrl;
+                if (!directUrl) {
+                    log.style.color = 'var(--error)';
+                    log.textContent = '⚠️ Could not find a downloadable video for this link.';
+                    return;
+                }
+
+                log.style.color = 'var(--success)';
+                log.textContent = '✅ Video found! Click "Download" below.';
+                preview.src = directUrl;
+                preview.style.display = 'block';
+                downloadBtn.style.display = 'inline-block';
+
+            } catch (e) {
+                log.style.color = 'var(--error)';
+                log.textContent = '⚠️ Error: ' + e.message;
+            }
+        };
+
+        downloadBtn.onclick = () => {
+            if (!directUrl) return;
+            const proxyUrl = `/api/proxy?url=${encodeURIComponent(directUrl)}&original=${encodeURIComponent(urlIn.value.trim())}`;
+            window.open(proxyUrl, '_blank');
+        };
+    </script>
+</body>
+
+</html>
