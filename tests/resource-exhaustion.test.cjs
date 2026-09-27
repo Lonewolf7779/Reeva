@@ -199,3 +199,64 @@ test("Resource Limit: HTML stream reader succeeds for responses within limit", a
     assert.equal(result, safeHtml);
 });
 
+test("Resource Limit: readStreamWithLimit handles errors emitted during/after destruction without unhandled error events", async () => {
+    const { Readable } = require("stream");
+    const { readStreamWithLimit, ResponseTooLargeError } = require("../lib/http-client.cjs");
+
+    let abortCalled = false;
+    let streamDestroyed = false;
+    let rejectCount = 0;
+    let unhandledErrorOccurred = false;
+
+    const unhandledListener = () => {
+        unhandledErrorOccurred = true;
+    };
+    process.on("uncaughtException", unhandledListener);
+
+    const stream = new Readable({
+        read() {
+            // Push chunk that exceeds the 500 byte limit
+            this.push(Buffer.alloc(600, "b"));
+        },
+        destroy(err, cb) {
+            streamDestroyed = true;
+            // Emit an error during destruction
+            this.emit("error", new Error("Socket error during destroy"));
+            cb(err);
+        }
+    });
+
+    const abortFn = () => {
+        abortCalled = true;
+    };
+
+    let caughtError = null;
+    try {
+        await readStreamWithLimit(stream, 500, abortFn);
+    } catch (err) {
+        rejectCount++;
+        caughtError = err;
+    }
+
+    // Also emit an error post-destruction on next tick to verify post-destruction safety
+    await new Promise((resolve) => {
+        process.nextTick(() => {
+            try {
+                stream.emit("error", new Error("Late socket reset after destroy"));
+            } catch {
+                unhandledErrorOccurred = true;
+            }
+            resolve();
+        });
+    });
+
+    process.removeListener("uncaughtException", unhandledListener);
+
+    assert.equal(rejectCount, 1, "Function must reject exactly once");
+    assert.ok(caughtError instanceof ResponseTooLargeError, "Rejection error must be ResponseTooLargeError");
+    assert.equal(abortCalled, true, "Upstream abort must still happen");
+    assert.equal(streamDestroyed, true, "Stream destroy must be called");
+    assert.equal(unhandledErrorOccurred, false, "No unhandled error event must occur");
+});
+
+
