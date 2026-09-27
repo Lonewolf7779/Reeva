@@ -158,6 +158,7 @@
             font-size: 12px;
             text-decoration: underline;
             margin-left: 8px;
+            cursor: pointer;
         }
 
         footer {
@@ -176,25 +177,25 @@
 
         <!-- Platform Selector -->
         <div id="platforms">
-            <button class="platform-btn active" data-platform="instagram">Instagram</button>
-            <button class="platform-btn" data-platform="facebook">Facebook</button>
-            <button class="platform-btn" data-platform="twitter">Twitter (X)</button>
-            <button class="platform-btn" data-platform="pinterest">Pinterest</button>
-            <button class="platform-btn" data-platform="youtube">YouTube</button>
+            <button class="platform-btn active" data-platform="instagram" type="button">Instagram</button>
+            <button class="platform-btn" data-platform="facebook" type="button">Facebook</button>
+            <button class="platform-btn" data-platform="twitter" type="button">Twitter (X)</button>
+            <button class="platform-btn" data-platform="pinterest" type="button">Pinterest</button>
+            <button class="platform-btn" data-platform="youtube" type="button">YouTube</button>
         </div>
 
         <p style="color:var(--muted); text-align:center;">Paste your link below and click <b>Get</b>.</p>
-        <input id="url" type="text" placeholder="Paste your video link here..." />
+        <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" />
 
         <div class="row">
-            <button id="get" class="action">Get</button>
-            <button id="download" class="action" style="display:none">Download</button>
+            <button id="get" class="action" type="button">Get</button>
+            <button id="download" class="action" style="display:none" type="button">Download</button>
         </div>
 
         <label>
             <input id="consent" type="checkbox">
             I confirm I own or have permission to download this content.
-            <a class="small" href="#" onclick="alert('Use only for public or your own content.');return false;">Why?</a>
+            <a id="why-consent" class="small" href="#">Why?</a>
         </label>
 
         <div id="log"></div>
@@ -206,78 +207,7 @@
         </footer>
     </div>
 
-    <script>
-        const getBtn = document.getElementById('get');
-        const downloadBtn = document.getElementById('download');
-        const urlIn = document.getElementById('url');
-        const log = document.getElementById('log');
-        const preview = document.getElementById('preview');
-        const consent = document.getElementById('consent');
-        const platformBtns = document.querySelectorAll('.platform-btn');
-        let currentPlatform = 'instagram';
-        let directUrl = '';
-
-        platformBtns.forEach(btn => {
-            btn.addEventListener('click', () => {
-                platformBtns.forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentPlatform = btn.dataset.platform;
-                log.textContent = `Selected: ${currentPlatform}`;
-            });
-        });
-
-        getBtn.onclick = async () => {
-            const u = urlIn.value.trim();
-            if (!consent.checked) {
-                alert("Please check the confirmation box before downloading.");
-                return;
-            }
-            if (!u) {
-                log.style.color = 'var(--error)';
-                log.textContent = '⚠️ Please paste a video link first.';
-                return;
-            }
-
-            log.style.color = 'var(--muted)';
-            log.textContent = 'Fetching video... please wait.';
-            preview.style.display = 'none';
-            downloadBtn.style.display = 'none';
-
-            try {
-                const resp = await fetch(`/api/download/${currentPlatform}?url=${encodeURIComponent(u)}`);
-                const json = await resp.json();
-
-                if (!resp.ok) {
-                    log.style.color = 'var(--error)';
-                    log.textContent = '❌ ' + (json.error || 'Something went wrong. Please try again.');
-                    return;
-                }
-
-                directUrl = json.videoUrl;
-                if (!directUrl) {
-                    log.style.color = 'var(--error)';
-                    log.textContent = '⚠️ Could not find a downloadable video for this link.';
-                    return;
-                }
-
-                log.style.color = 'var(--success)';
-                log.textContent = '✅ Video found! Click "Download" below.';
-                preview.src = directUrl;
-                preview.style.display = 'block';
-                downloadBtn.style.display = 'inline-block';
-
-            } catch (e) {
-                log.style.color = 'var(--error)';
-                log.textContent = '⚠️ Error: ' + e.message;
-            }
-        };
-
-        downloadBtn.onclick = () => {
-            if (!directUrl) return;
-            const proxyUrl = `/api/proxy?url=${encodeURIComponent(directUrl)}&original=${encodeURIComponent(urlIn.value.trim())}`;
-            window.open(proxyUrl, '_blank');
-        };
-    </script>
+    <script src="/app.js" defer></script>
 </body>
 
 </html>

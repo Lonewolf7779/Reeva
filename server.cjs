@@ -1,261 +1,401 @@
-// server.cjs — Reeva self-hosted backend (multi-platform downloader)
+// server.cjs — Reeva Hardened Multi-Platform Media Downloader Backend
+"use strict";
+
 const express = require("express");
 const helmet = require("helmet");
-const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
-const fetch = require("node-fetch"); // v2 for CommonJS
-const ytdl = require("ytdl-core");
-const ytdl_exec = require("@distube/ytdl-core"); // backup parser
+const ytdl_exec = require("@distube/ytdl-core");
 require("dotenv").config();
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const {
+    SUPPORTED_SOURCE_DOMAINS,
+    SUPPORTED_MEDIA_DOMAINS,
+    ValidationError,
+    validatePlatform,
+    validateSourceUrl,
+    validateMediaUrl
+} = require("./lib/url-validator.cjs");
 
-// ================== SECURITY + MIDDLEWARE ==================
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(morgan("dev"));
-app.use(express.static("public"));
-app.use(rateLimit({
-    windowMs: 10 * 60 * 1000, // 10 minutes
-    max: 60,
-    message: { error: "Too many requests. Please wait a few minutes and try again." }
+const { SSRFError } = require("./lib/ssrf-filter.cjs");
+
+const {
+    DEFAULT_MAX_MEDIA_BYTES,
+    SecurityHTTPError,
+    ResponseTooLargeError,
+    StreamMeter,
+    isPermittedMediaContentType,
+    secureFetch,
+    secureFetchHtml
+} = require("./lib/http-client.cjs");
+
+const { defaultRegistry } = require("./lib/media-registry.cjs");
+const { defaultCache } = require("./lib/cache.cjs");
+const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
+const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
+
+const app = express();
+const PORT = parseInt(process.env.PORT || "3000", 10);
+
+// ================== PRODUCTION CONFIGURATION ==================
+// Do not blindly set trust proxy to true without deliberate configuration
+if (process.env.TRUST_PROXY) {
+    app.set("trust proxy", process.env.TRUST_PROXY);
+} else {
+    app.set("trust proxy", false);
+}
+
+// Disable Express fingerprinting header
+app.disable("x-powered-by");
+
+// ================== SECURITY HEADERS ==================
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"], // permits internal style block in index.html
+            imgSrc: ["'self'", "data:", "blob:"],
+            mediaSrc: ["'self'", "blob:"],
+            connectSrc: ["'self'"],
+            frameAncestors: ["'none'"],
+            objectSrc: ["'none'"],
+            baseUri: ["'self'"],
+            formAction: ["'self'"]
+        }
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "same-origin" },
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    xContentTypeOptions: true,
+    hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+    }
 }));
 
-// ================== CACHE ==================
-const cache = new Map(); // key: url -> { result, expiresAt }
-const cacheTTL = 10 * 60 * 1000; // 10 minutes
+// Additional explicit security headers
+app.use((req, res, next) => {
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    next();
+});
+
+// Request correlation ID middleware
+app.use(requestIdMiddleware);
+
+// Static assets
+app.use(express.static("public", {
+    maxAge: "1d",
+    etag: true,
+    dotfiles: "ignore"
+}));
+
+// ================== RATE LIMITERS ==================
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: parseInt(process.env.RATE_LIMIT_GENERAL_MAX || "100", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many requests. Please wait a few minutes and try again."
+        }
+    }
+});
+app.use(generalLimiter);
+
+const extractionLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: parseInt(process.env.RATE_LIMIT_EXTRACTION_MAX || "15", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many extraction requests. Please wait a minute and try again."
+        }
+    }
+});
+
+const mediaStreamLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: parseInt(process.env.RATE_LIMIT_MEDIA_MAX || "30", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many media download requests. Please wait a few minutes."
+        }
+    }
+});
+
+// Concurrency limiter for expensive extraction and streaming operations
+const extractionConcurrencyLimiter = createConcurrencyLimiter({
+    maxGlobal: parseInt(process.env.MAX_GLOBAL_CONCURRENCY || "50", 10),
+    maxPerIp: parseInt(process.env.MAX_IP_CONCURRENCY || "3", 10)
+});
 
 // ================== LOCAL MODULES ==================
-let localModules = {};
-try { localModules.instagram = require("@sasmeee/igdl"); } catch (e) { }
+const localModules = {};
 try { localModules.instagramAlt = require("instagram-url-direct"); } catch (e) { }
 try { localModules.twitter = require("twitter-downloader"); } catch (e) { }
 try { localModules.pinterest = require("pinterest-dl"); } catch (e) { }
 try { localModules.universal = require("@totallynodavid/downloader"); } catch (e) { }
 
-console.log("Loaded modules:", Object.keys(localModules));
-
-// ================== BASIC UTILITIES ==================
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function fetchPage(url) {
-    const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 (ReevaBot)" }
-    });
-    if (!resp.ok) throw new Error(`Failed to load page (${resp.status})`);
-    return await resp.text();
-}
-
+// ================== EXTRACTION UTILITIES ==================
 function extractFromMeta(html) {
-    const match = html.match(/<meta property="og:video" content="([^"]+)"/i);
+    const match = html.match(/<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i);
     if (match && match[1]) return match[1];
     return null;
 }
+
 function extractMediaFromHtml(html) {
     const decode = s => s?.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
 
-    // Try multiple patterns — order matters
     const patterns = [
-        /"video_versions":\[\{"url":"([^"]+)"/i,
+        /"video_versions":\[\{[^}]*"url":"([^"]+)"/i,
         /"video_url"\s*:\s*"([^"]+)"/i,
-        /"url"\s*:\s*"([^"]+\.mp4)"/i,
-        /"src"\s*:\s*"([^"]+\.mp4)"/i,
+        /"url"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+        /"src"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
         /"contentUrl"\s*:\s*"([^"]+)"/i,
         /"playbackUrl"\s*:\s*"([^"]+)"/i,
-        /"display_resources":\[\{"src":"([^"]+)"/i,
+        /"display_resources":\[\{[^}]*"src":"([^"]+)"/i,
         /"display_url"\s*:\s*"([^"]+)"/i,
-        /<meta property="og:video" content="([^"]+)"/i,
-        /<meta property="og:image" content="([^"]+)"/i
+        /<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i,
+        /<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i
     ];
 
     for (const pattern of patterns) {
         const match = html.match(pattern);
         if (match && match[1]) {
-            const url = decode(match[1]);
-            const type = url.includes(".mp4") ? "video" : "image";
-            return { url, type };
+            const rawUrl = decode(match[1]);
+            const type = rawUrl.includes(".mp4") ? "video" : "image";
+            return { url: rawUrl, type };
         }
     }
 
     return null;
 }
 
-
 // ================== PLATFORM HANDLERS ==================
 
 // --- Instagram ---
-async function getInstagramMedia(url) {
-    console.log("🕵️‍♂️ [Instagram] Starting extraction for:", url);
+async function getInstagramMedia(validatedUrl) {
+    // Check in-memory cache
+    const cached = defaultCache.get(validatedUrl);
+    if (cached) return cached;
 
-    if (!/instagram\.com/i.test(url))
-        throw new Error("❌ Please enter a valid Instagram link.");
-
-    // 🟢 Cache check
-    const cached = cache.get(url);
-    if (cached && cached.expiresAt > Date.now()) {
-        console.log("📦 Returning cached Instagram result");
-        return cached.result;
-    }
-
-    // 🟢 Try local module first (igdl or instagram-url-direct)
-    try {
-        if (localModules.instagramAlt) {
-            const result = await localModules.instagramAlt(url);
+    // 1. Try local module
+    if (localModules.instagramAlt) {
+        try {
+            const result = await localModules.instagramAlt(validatedUrl);
             if (result && result.url) {
+                validateMediaUrl(result.url);
                 const res = { url: result.url, type: "video" };
-                cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
-                console.log("✅ Instagram media found via local module:", res.url);
+                defaultCache.set(validatedUrl, res);
                 return res;
             }
+        } catch (e) {
+            // Fall through to HTML extraction
         }
-    } catch (e) {
-        console.warn("⚠️ Instagram local module failed:", e.message);
     }
 
-    // 🟢 HTML Extraction (new patterns)
+    // 2. Controlled HTML extraction
     try {
-        const html = await fetchPage(url);
+        const html = await secureFetchHtml(validatedUrl, SUPPORTED_SOURCE_DOMAINS.instagram);
         const decode = s => s?.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
 
-        // --- 1️⃣ Look for video_versions JSON ---
-        const match1 = html.match(/"video_versions":\[\{"type":[^}]*"url":"([^"]+)"/);
+        const match1 = html.match(/"video_versions":\[\{[^}]*"url":"([^"]+)"/);
         if (match1 && match1[1]) {
             const link = decode(match1[1]);
-            console.log("✅ Found via video_versions pattern:", link);
+            validateMediaUrl(link);
             const res = { url: link, type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            defaultCache.set(validatedUrl, res);
             return res;
         }
 
-        // --- 2️⃣ Look for display_resources (images fallback) ---
-        const match2 = html.match(/"display_resources":\[\{"src":"([^"]+)"/);
+        const match2 = html.match(/"display_resources":\[\{[^}]*"src":"([^"]+)"/);
         if (match2 && match2[1]) {
             const link = decode(match2[1]);
-            console.log("✅ Found via display_resources pattern:", link);
+            validateMediaUrl(link);
             const res = { url: link, type: "image" };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            defaultCache.set(validatedUrl, res);
             return res;
         }
 
-        // --- 3️⃣ Fallback meta tags ---
-        const match3 = html.match(/<meta property="og:video" content="([^"]+)"/);
+        const match3 = html.match(/<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i);
         if (match3 && match3[1]) {
             const link = decode(match3[1]);
-            console.log("✅ Found via og:video meta tag:", link);
+            validateMediaUrl(link);
             const res = { url: link, type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            defaultCache.set(validatedUrl, res);
             return res;
         }
 
-        // --- 4️⃣ Last resort (display_url meta) ---
-        const match4 = html.match(/<meta property="og:image" content="([^"]+)"/);
+        const match4 = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
         if (match4 && match4[1]) {
             const link = decode(match4[1]);
-            console.log("✅ Found via og:image fallback:", link);
+            validateMediaUrl(link);
             const res = { url: link, type: "image" };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
+            defaultCache.set(validatedUrl, res);
             return res;
         }
-
-        console.warn("⚠️ No media found in HTML for Instagram post.");
     } catch (e) {
-        console.warn("⚠️ Instagram HTML extraction failed:", e.message);
+        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
+            throw e;
+        }
     }
 
-    // 🟢 Final fallback
-    throw new Error("❌ Reeva couldn’t find any downloadable media for this Instagram post. Please make sure it’s public and contains a visible video or image.");
+    throw new ValidationError(
+        "Could not find downloadable media for this Instagram link. Ensure it is public and contains visible media.",
+        "EXTRACTION_FAILED"
+    );
 }
 
+// --- Facebook ---
+async function getFacebookMedia(validatedUrl) {
+    const cached = defaultCache.get(validatedUrl);
+    if (cached) return cached;
 
-// --- Facebook (public only) ---
-async function getFacebookMedia(url) {
-    if (!/facebook\.com|fb\.watch/i.test(url)) throw new Error("Please enter a valid Facebook link.");
-
-    const cached = cache.get(url);
-    if (cached && cached.expiresAt > Date.now()) return cached.result;
-
-    // Try universal downloader
     if (localModules.universal) {
         try {
-            const out = await localModules.universal(url);
+            const out = await localModules.universal(validatedUrl);
             const vid = out?.url || out?.video || out?.downloadUrl;
             if (vid) {
+                validateMediaUrl(vid);
                 const res = { url: vid, type: "video" };
-                cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
+                defaultCache.set(validatedUrl, res);
                 return res;
             }
-        } catch (e) { console.warn("Universal FB module failed:", e.message); }
+        } catch (e) { }
     }
 
-    // HTML fallback
     try {
-        const html = await fetchPage(url);
+        const html = await secureFetchHtml(validatedUrl, SUPPORTED_SOURCE_DOMAINS.facebook);
         const meta = extractFromMeta(html);
         if (meta) {
+            validateMediaUrl(meta);
             const res = { url: meta, type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
+            defaultCache.set(validatedUrl, res);
             return res;
         }
-    } catch (e) { console.warn("Facebook meta extraction failed:", e.message); }
-
-    throw new Error("This Facebook video seems private or unavailable. Only public videos can be downloaded.");
-}
-
-// --- Twitter/X ---
-async function getTwitterMedia(url) {
-    if (!/twitter\.com|x\.com/i.test(url)) throw new Error("Please enter a valid Twitter (X) link.");
-
-    const cached = cache.get(url);
-    if (cached && cached.expiresAt > Date.now()) return cached.result;
-
-    try {
-        const result = await localModules.twitter(url);
-        const vid = result?.download?.[0]?.url || result?.url;
-        if (vid) {
-            const res = { url: vid, type: "video" };
-            cache.set(url, { result: res, expiresAt: Date.now() + cacheTTL });
-            return res;
+    } catch (e) {
+        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
+            throw e;
         }
-    } catch (e) { console.warn("Twitter module failed:", e.message); }
+    }
 
-    throw new Error("Reeva couldn’t find a playable video. Make sure the tweet is public and contains a video.");
+    throw new ValidationError(
+        "Could not retrieve media from this Facebook link. Ensure it is public.",
+        "EXTRACTION_FAILED"
+    );
 }
 
-async function getYouTubeMedia(url) {
-    if (!/youtube\.com|youtu\.be/i.test(url))
-        throw new Error("Please enter a valid YouTube link.");
+// --- Twitter / X ---
+async function getTwitterMedia(validatedUrl) {
+    const cached = defaultCache.get(validatedUrl);
+    if (cached) return cached;
 
-    console.log("🎥 Fetching YouTube media for:", url);
-
-    try {
-        let info;
+    if (localModules.twitter) {
         try {
-            // 🧠 Try standard ytdl-core first
-            info = await ytdl.getInfo(url);
-        } catch (err) {
-            console.warn("⚠️ Primary ytdl-core failed:", err.message);
-            console.log("🧩 Trying backup parser...");
-            info = await ytdl_exec.getInfo(url);
+            const result = await localModules.twitter(validatedUrl);
+            const vid = result?.download?.[0]?.url || result?.url;
+            if (vid) {
+                validateMediaUrl(vid);
+                const res = { url: vid, type: "video" };
+                defaultCache.set(validatedUrl, res);
+                return res;
+            }
+        } catch (e) { }
+    }
+
+    throw new ValidationError(
+        "Could not retrieve media from this tweet. Ensure it is public and contains a video.",
+        "EXTRACTION_FAILED"
+    );
+}
+
+// --- Pinterest ---
+async function getPinterestMedia(validatedUrl) {
+    let targetUrl = validatedUrl;
+
+    // Handle pin.it short links securely with redirect validation
+    const parsed = new URL(targetUrl);
+    if (parsed.hostname === "pin.it" || parsed.hostname.endsWith(".pin.it")) {
+        try {
+            const { finalUrl, clearTimeout: clearTimer } = await secureFetch(targetUrl, {
+                allowedDomains: SUPPORTED_SOURCE_DOMAINS.pinterest,
+                maxRedirects: 3,
+                timeoutMs: 8000
+            });
+            clearTimer();
+            targetUrl = validateSourceUrl(finalUrl, "pinterest");
+        } catch (e) {
+            throw new ValidationError("Could not resolve Pinterest short link.", "EXTRACTION_FAILED");
+        }
+    }
+
+    const cached = defaultCache.get(targetUrl);
+    if (cached) return cached;
+
+    if (localModules.pinterest) {
+        try {
+            const result = await localModules.pinterest(targetUrl);
+            const pin = result?.url || result?.[0]?.url;
+            if (pin) {
+                validateMediaUrl(pin);
+                const res = { url: pin, type: pin.endsWith(".mp4") ? "video" : "image" };
+                defaultCache.set(targetUrl, res);
+                return res;
+            }
+        } catch (e) { }
+    }
+
+    try {
+        const html = await secureFetchHtml(targetUrl, SUPPORTED_SOURCE_DOMAINS.pinterest);
+        const extracted = extractMediaFromHtml(html);
+        if (extracted && extracted.url) {
+            validateMediaUrl(extracted.url);
+            const res = { url: extracted.url, type: extracted.type };
+            defaultCache.set(targetUrl, res);
+            return res;
+        }
+    } catch (e) {
+        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
+            throw e;
+        }
+    }
+
+    throw new ValidationError(
+        "Could not find media for this Pinterest link. Ensure it is public.",
+        "EXTRACTION_FAILED"
+    );
+}
+
+// --- YouTube ---
+async function getYouTubeMedia(validatedUrl) {
+    const cached = defaultCache.get(validatedUrl);
+    if (cached) return cached;
+
+    try {
+        const info = await ytdl_exec.getInfo(validatedUrl);
+        if (!info || !info.formats) {
+            throw new ValidationError("Could not retrieve video stream details.", "EXTRACTION_FAILED");
         }
 
-        if (!info || !info.formats) throw new Error("Could not retrieve video details.");
-
-        console.log("🎬 Title:", info.videoDetails?.title || "Untitled");
-        console.log("🧾 Total formats:", info.formats?.length || 0);
-
-        // ✅ Try for MP4 with both audio + video first
-        let format =
+        const format =
             info.formats.find(f => f.hasVideo && f.hasAudio && f.container === "mp4") ||
             info.formats.find(f => f.hasVideo && f.container === "mp4") ||
             info.formats.find(f => f.mimeType && f.mimeType.includes("video"));
 
         if (!format || !format.url) {
-            console.warn("⚠️ No valid downloadable format found, showing keys:");
-            console.log(Object.keys(info.formats[0] || {}));
-            throw new Error("Reeva couldn’t find a downloadable YouTube stream.");
+            throw new ValidationError("No downloadable format available.", "EXTRACTION_FAILED");
         }
 
-        console.log(`✅ YouTube format chosen: ${format.qualityLabel || "unknown"} (${format.container})`);
+        validateMediaUrl(format.url);
 
         const result = {
             url: format.url,
@@ -263,182 +403,356 @@ async function getYouTubeMedia(url) {
             title: info.videoDetails?.title || "Reeva YouTube Video"
         };
 
-        cache.set(url, { result, expiresAt: Date.now() + 10 * 60 * 1000 });
+        defaultCache.set(validatedUrl, result);
         return result;
 
     } catch (err) {
-        console.error("❌ YouTube fetch failed:", err.message);
-        throw new Error("Reeva couldn’t get a video from YouTube. Make sure it’s public and not restricted.");
+        if (err instanceof ValidationError) throw err;
+        throw new ValidationError("Could not retrieve media from YouTube.", "EXTRACTION_FAILED");
     }
 }
 
-
-
-// --- Pinterest ---
-async function getPinterestMedia(url) {
-    console.log("🕵️‍♂️ [Pinterest] Starting extraction for:", url);
-
-    // 🟢 STEP 1 — Handle short links like https://pin.it/abcd1234
-    if (/pin\.it/i.test(url)) {
-        try {
-            const resp = await fetch(url, { redirect: "manual" });
-            const redirected = resp.headers.get("location");
-            if (redirected && /pinterest\.com/i.test(redirected)) {
-                console.log(`🔗 Resolved short link → ${redirected}`);
-                url = redirected; // update URL for the rest of the process
-            } else {
-                throw new Error("Could not expand the Pinterest short link.");
-            }
-        } catch (e) {
-            console.warn("⚠️ Pinterest short link resolver failed:", e.message);
-            throw new Error("Reeva couldn’t open this Pinterest link. Try opening it once in your browser.");
-        }
+// ================== METHOD ENFORCEMENT ==================
+// Reject non-GET HTTP methods cleanly on API endpoints
+app.use("/api", (req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+        return res.status(405).json({
+            error: {
+                code: "METHOD_NOT_ALLOWED",
+                message: `HTTP method ${req.method} is not permitted.`
+            },
+            requestId: req.id
+        });
     }
+    next();
+});
 
-    // 🟢 STEP 2 — Validate AFTER resolving
-    if (!/pinterest\.com/i.test(url))
-        throw new Error("❌ Please enter a valid Pinterest link from pinterest.com");
+// ================== MAIN EXTRACTION ENDPOINT ==================
+app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    const startTime = Date.now();
+    let platform = "unknown";
 
-    // 🟢 STEP 3 — Cache check
-    const cached = cache.get(url);
-    if (cached && cached.expiresAt > Date.now()) {
-        console.log("📦 Returning cached Pinterest result");
-        return cached.result;
-    }
-
-    // 🟢 STEP 4 — Try local module (pinterest-dl)
     try {
-        const result = await localModules.pinterest(url);
-        const pin = result?.url || result?.[0]?.url;
-        if (pin) {
-            const res = { url: pin, type: pin.endsWith(".mp4") ? "video" : "image" };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
-            console.log("✅ Pinterest media found via local module:", res.url);
-            return res;
-        }
-    } catch (e) {
-        console.warn("⚠️ Pinterest module failed:", e.message);
-    }
-
-    // 🟢 STEP 5 — Try HTML extraction as fallback
-    try {
-        const html = await fetchPage(url);
-        const extracted = extractMediaFromHtml(html);
-        if (extracted && extracted.url) {
-            const res = { url: extracted.url, type: extracted.type };
-            cache.set(url, { result: res, expiresAt: Date.now() + 10 * 60 * 1000 });
-            console.log("✅ Pinterest media found via HTML fallback:", res.url);
-            return res;
-        }
-    } catch (e) {
-        console.warn("⚠️ Pinterest HTML extraction failed:", e.message);
-    }
-
-    // 🟢 STEP 6 — All attempts failed
-    throw new Error("❌ Reeva couldn’t find any downloadable media for this Pinterest post. Please make sure it’s public and has a visible image or video.");
-}
-// --- WhatsApp ---
-async function getWhatsAppMedia() {
-    throw new Error("WhatsApp statuses are private. Reeva cannot download them for privacy reasons.");
-}
-
-// ================== MAIN DOWNLOAD ROUTE ==================
-app.get("/api/download/:platform", async (req, res) => {
-    try {
-        const { platform } = req.params;
+        platform = validatePlatform(req.params.platform);
         const { url } = req.query;
-        if (!url) return res.status(400).json({ error: "Please paste a link first." });
+
+        if (!url) {
+            return res.status(400).json({
+                error: {
+                    code: "MISSING_URL",
+                    message: "Please paste a video link first."
+                },
+                requestId: req.id
+            });
+        }
+
+        // Validate source URL strictly
+        const validatedUrl = validateSourceUrl(url, platform);
 
         let result;
-        switch (platform.toLowerCase()) {
-            case "instagram": result = await getInstagramMedia(url); break;
-            case "facebook": result = await getFacebookMedia(url); break;
-            case "twitter":
-            case "x": result = await getTwitterMedia(url); break;
-            case "pinterest": result = await getPinterestMedia(url); break;
-            case "youtube":
-                result = await getYouTubeMedia(url);
+        switch (platform) {
+            case "instagram":
+                result = await getInstagramMedia(validatedUrl);
                 break;
-            case "whatsapp": return res.status(501).json({ error: "WhatsApp download is not available." });
-            default: return res.status(400).json({ error: "This platform is not supported yet." });
+            case "facebook":
+                result = await getFacebookMedia(validatedUrl);
+                break;
+            case "twitter":
+            case "x":
+                result = await getTwitterMedia(validatedUrl);
+                break;
+            case "pinterest":
+                result = await getPinterestMedia(validatedUrl);
+                break;
+            case "youtube":
+                result = await getYouTubeMedia(validatedUrl);
+                break;
+            default:
+                return res.status(400).json({
+                    error: {
+                        code: "UNSUPPORTED_PLATFORM",
+                        message: "This platform is not supported."
+                    },
+                    requestId: req.id
+                });
         }
 
         if (!result || !result.url) {
-            console.warn(`⚠️ No media found for ${platform} → ${url}`);
             return res.status(404).json({
-                error: `❌ Reeva couldn’t find a downloadable media for this ${platform} post.
-Make sure it's public and contains a video or image.`
+                error: {
+                    code: "MEDIA_NOT_FOUND",
+                    message: `Could not find downloadable media for this ${platform} post.`
+                },
+                requestId: req.id
             });
         }
-        res.json({ videoUrl: result.url, mediaType: result.type || "unknown" });
-    } catch (err) {
-        console.error("❌ Download error:", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
 
-// ================== PROXY ENDPOINT ==================
-// ⚔️ Smart Proxy Endpoint — auto-refresh expired Instagram tokens
-app.get("/api/proxy", async (req, res) => {
-    try {
-        const { url, original } = req.query;
-        if (!url) return res.status(400).send("Missing URL");
-
-        console.log("🌍 Proxying media:", url);
-
-        // 🧠 Always refresh for Instagram CDN links
-        if (/scontent\.cdninstagram\.com/i.test(url) && original) {
-            console.log("🔁 Refreshing Instagram token before fetch...");
-            const refreshed = await getInstagramMedia(original);
-            if (refreshed?.url) {
-                console.log("✅ Got fresh Instagram media URL:", refreshed.url);
-                return res.redirect(`/api/proxy?url=${encodeURIComponent(refreshed.url)}`);
-            } else {
-                throw new Error("Could not refresh Instagram video link.");
-            }
-        }
-
-        const response = await fetch(url, {
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
-                "Accept": "*/*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.instagram.com/",
-                "Origin": "https://www.instagram.com/",
-                "Connection": "keep-alive"
-            },
-            redirect: "follow"
+        // Register the validated upstream URL and generate an opaque media ID
+        const registered = defaultRegistry.registerMedia({
+            upstreamUrl: result.url,
+            platform,
+            type: result.type || "video",
+            title: result.title || "Media"
         });
 
-        if (!response.ok) {
-            console.error("❌ Proxy fetch failed:", response.status, response.statusText);
-            return res.status(502).send(`Could not fetch media from source (HTTP ${response.status}).`);
-        }
+        logger.info({
+            requestId: req.id,
+            platform,
+            operation: "extract",
+            status: "success",
+            durationMs: Date.now() - startTime,
+            url: validatedUrl
+        });
 
-        if (/googlevideo\.com/i.test(url)) {
-            console.log("🎬 Proxying YouTube CDN link...");
-            res.setHeader("Content-Disposition", 'inline; filename="reeva_youtube.mp4"');
-        } else {
-            res.setHeader("Content-Disposition", 'inline; filename="reeva_instagram.mp4"');
-        }
+        // Return opaque media references
+        res.json({
+            media: registered,
+            streamUrl: `/api/media/${registered.id}`,
+            downloadUrl: `/api/media/${registered.id}?download=1`,
+            // Backward-compatibility field
+            videoUrl: `/api/media/${registered.id}`
+        });
 
-
-
-        const contentType = response.headers.get("content-type") || "application/octet-stream";
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("Content-Disposition", "inline; filename=reeva_instagram.mp4");
-        res.setHeader("Cache-Control", "no-cache");
-
-        response.body.pipe(res);
     } catch (err) {
-        console.error("❌ Proxy error:", err.message);
-        res.status(500).send("Proxy error — failed to retrieve media stream.");
+        logger.error({
+            requestId: req.id,
+            platform,
+            operation: "extract",
+            status: "error",
+            durationMs: Date.now() - startTime,
+            message: err.message
+        });
+
+        const statusCode = err instanceof ValidationError ? 400 : 502;
+        const errorCode = err.code || "EXTRACTION_FAILED";
+
+        res.status(statusCode).json({
+            error: {
+                code: errorCode,
+                message: err.message || "We could not retrieve media from this link."
+            },
+            requestId: req.id
+        });
     }
 });
 
+// ================== SECURE MEDIA STREAMING ENDPOINT ==================
+app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    const { mediaId } = req.params;
+    const { download } = req.query;
 
-// ================== START SERVER ==================
-app.listen(PORT, () => {
-    console.log(`✅ Reeva backend is live at http://localhost:${PORT}`);
-    console.log("🧩 Active modules:", Object.keys(localModules).filter(k => localModules[k]));
+    if (!mediaId || !/^[a-zA-Z0-9_\-]{8,64}$/.test(mediaId)) {
+        return res.status(400).json({
+            error: {
+                code: "INVALID_MEDIA_ID",
+                message: "Invalid media reference."
+            },
+            requestId: req.id
+        });
+    }
+
+    const mediaEntry = defaultRegistry.getMedia(mediaId);
+    if (!mediaEntry) {
+        return res.status(404).json({
+            error: {
+                code: "MEDIA_NOT_FOUND",
+                message: "The requested media link has expired or does not exist. Please extract again."
+            },
+            requestId: req.id
+        });
+    }
+
+    let fetchHandle;
+
+    try {
+        const maxMediaSize = parseInt(process.env.MAX_MEDIA_SIZE_BYTES || String(DEFAULT_MAX_MEDIA_BYTES), 10);
+
+        // Secure fetch with SSRF, redirect, and size controls
+        fetchHandle = await secureFetch(mediaEntry.upstreamUrl, {
+            allowedDomains: SUPPORTED_MEDIA_DOMAINS,
+            maxSizeBytes: maxMediaSize,
+            maxRedirects: 3,
+            timeoutMs: 30000,
+            headers: {
+                "Referer": "https://www.instagram.com/"
+            }
+        });
+
+        const { response } = fetchHandle;
+
+        if (!response.ok) {
+            return res.status(502).json({
+                error: {
+                    code: "UPSTREAM_FETCH_FAILED",
+                    message: `Could not retrieve media from upstream provider (HTTP ${response.status}).`
+                },
+                requestId: req.id
+            });
+        }
+
+        const rawContentType = response.headers.get("content-type") || "video/mp4";
+
+        // Validate upstream Content-Type
+        if (!isPermittedMediaContentType(rawContentType)) {
+            fetchHandle.abort();
+            return res.status(502).json({
+                error: {
+                    code: "UNSAFE_CONTENT_TYPE",
+                    message: "The upstream media stream returned an invalid or unsupported content type."
+                },
+                requestId: req.id
+            });
+        }
+
+        // Set safe response headers
+        const isDownload = download === "1";
+        const fileExt = mediaEntry.type === "image" ? "jpg" : "mp4";
+        const disposition = isDownload
+            ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
+            : "inline";
+
+        res.setHeader("Content-Type", rawContentType);
+        res.setHeader("Content-Disposition", disposition);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Cache-Control", "private, no-transform, max-age=3600");
+
+        const contentLength = response.headers.get("content-length");
+        if (contentLength) {
+            res.setHeader("Content-Length", contentLength);
+        }
+
+        // Stream through byte meter to enforce hard maximum size limit
+        const meter = new StreamMeter(maxMediaSize, () => {
+            fetchHandle.abort();
+        });
+
+        meter.on("error", (err) => {
+            fetchHandle.abort();
+            if (!res.headersSent) {
+                res.status(413).json({
+                    error: {
+                        code: "PAYLOAD_TOO_LARGE",
+                        message: "Media stream exceeded maximum permitted size."
+                    },
+                    requestId: req.id
+                });
+            } else {
+                res.destroy();
+            }
+        });
+
+        // Cancel upstream fetch if client disconnects
+        req.on("close", () => {
+            if (!res.writableEnded) {
+                fetchHandle.abort();
+            }
+        });
+
+        response.body.pipe(meter).pipe(res);
+
+    } catch (err) {
+        if (fetchHandle) fetchHandle.abort();
+
+        const status = err instanceof SecurityHTTPError ? err.statusCode : 500;
+        if (!res.headersSent) {
+            res.status(status).json({
+                error: {
+                    code: err.code || "STREAM_ERROR",
+                    message: err.message || "Failed to retrieve media stream."
+                },
+                requestId: req.id
+            });
+        } else {
+            res.destroy();
+        }
+    }
 });
+
+// ================== COMPATIBILITY PROXY ENDPOINT ==================
+// Accepts only validated Reeva-generated media IDs or registered media URLs.
+// Arbitrary URLs are strictly rejected to prevent SSRF.
+app.get("/api/proxy", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    const { id, url } = req.query;
+
+    // 1. If opaque ID is supplied
+    if (id) {
+        req.params.mediaId = id;
+        return app._router.handle(req, res);
+    }
+
+    // 2. If URL is supplied, verify if it was registered
+    if (url) {
+        const found = defaultRegistry.findByUpstreamUrl(url);
+        if (found) {
+            req.params.mediaId = found.id;
+            return app._router.handle(req, res);
+        }
+
+        // If URL is not in registry, validate against approved media CDN
+        try {
+            validateMediaUrl(url);
+            const registered = defaultRegistry.registerMedia({
+                upstreamUrl: url,
+                platform: "media",
+                type: "video"
+            });
+            req.params.mediaId = registered.id;
+            return app._router.handle(req, res);
+        } catch {
+            return res.status(403).json({
+                error: {
+                    code: "ARBITRARY_PROXY_FORBIDDEN",
+                    message: "Arbitrary URL proxying is forbidden. Only verified Reeva media streams are permitted."
+                },
+                requestId: req.id
+            });
+        }
+    }
+
+    return res.status(400).json({
+        error: {
+            code: "MISSING_PARAMETER",
+            message: "Missing media reference parameter."
+        },
+        requestId: req.id
+    });
+});
+
+// ================== CONTROLLED 404 FOR UNKNOWN API ROUTES ==================
+app.use("/api", (req, res) => {
+    res.status(404).json({
+        error: {
+            code: "NOT_FOUND",
+            message: "API endpoint not found."
+        },
+        requestId: req.id
+    });
+});
+
+// ================== GLOBAL ERROR HANDLER ==================
+app.use((err, req, res, next) => {
+    logger.error({
+        requestId: req.id,
+        message: err.message,
+        stack: process.env.NODE_ENV === "development" ? err.stack : undefined
+    });
+
+    res.status(err.statusCode || 500).json({
+        error: {
+            code: err.code || "INTERNAL_SERVER_ERROR",
+            message: "An internal server error occurred."
+        },
+        requestId: req.id
+    });
+});
+
+// ================== SERVER LIFECYCLE ==================
+if (require.main === module) {
+    app.listen(PORT, () => {
+        logger.info({
+            message: `Reeva backend is live on port ${PORT} [NODE_ENV=${process.env.NODE_ENV || "development"}]`
+        });
+    });
+}
+
+module.exports = app;
