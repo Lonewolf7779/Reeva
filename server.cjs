@@ -4,16 +4,11 @@
 const express = require("express");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const ytdl_exec = require("@distube/ytdl-core");
 require("dotenv").config();
 
 const {
-    SUPPORTED_SOURCE_DOMAINS,
     SUPPORTED_MEDIA_DOMAINS,
-    ValidationError,
-    validatePlatform,
-    validateSourceUrl,
-    validateMediaUrl
+    ValidationError
 } = require("./lib/url-validator.cjs");
 
 const { SSRFError } = require("./lib/ssrf-filter.cjs");
@@ -21,17 +16,15 @@ const { SSRFError } = require("./lib/ssrf-filter.cjs");
 const {
     DEFAULT_MAX_MEDIA_BYTES,
     SecurityHTTPError,
-    ResponseTooLargeError,
     StreamMeter,
     isPermittedMediaContentType,
-    secureFetch,
-    secureFetchHtml
+    secureFetch
 } = require("./lib/http-client.cjs");
 
 const { defaultRegistry } = require("./lib/media-registry.cjs");
-const { defaultCache } = require("./lib/cache.cjs");
 const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
 const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
+const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -138,280 +131,6 @@ const extractionConcurrencyLimiter = createConcurrencyLimiter({
     maxPerIp: parseInt(process.env.MAX_IP_CONCURRENCY || "3", 10)
 });
 
-// ================== LOCAL MODULES ==================
-const localModules = {};
-try { localModules.instagramAlt = require("instagram-url-direct"); } catch (e) { }
-try { localModules.twitter = require("twitter-downloader"); } catch (e) { }
-try { localModules.pinterest = require("pinterest-dl"); } catch (e) { }
-try { localModules.universal = require("@totallynodavid/downloader"); } catch (e) { }
-
-// ================== EXTRACTION UTILITIES ==================
-function extractFromMeta(html) {
-    const match = html.match(/<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i);
-    if (match && match[1]) return match[1];
-    return null;
-}
-
-function extractMediaFromHtml(html) {
-    const decode = s => s?.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
-
-    const patterns = [
-        /"video_versions":\[\{[^}]*"url":"([^"]+)"/i,
-        /"video_url"\s*:\s*"([^"]+)"/i,
-        /"url"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
-        /"src"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
-        /"contentUrl"\s*:\s*"([^"]+)"/i,
-        /"playbackUrl"\s*:\s*"([^"]+)"/i,
-        /"display_resources":\[\{[^}]*"src":"([^"]+)"/i,
-        /"display_url"\s*:\s*"([^"]+)"/i,
-        /<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i,
-        /<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i
-    ];
-
-    for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match && match[1]) {
-            const rawUrl = decode(match[1]);
-            const type = rawUrl.includes(".mp4") ? "video" : "image";
-            return { url: rawUrl, type };
-        }
-    }
-
-    return null;
-}
-
-// ================== PLATFORM HANDLERS ==================
-
-// --- Instagram ---
-async function getInstagramMedia(validatedUrl) {
-    // Check in-memory cache
-    const cached = defaultCache.get(validatedUrl);
-    if (cached) return cached;
-
-    // 1. Try local module
-    if (localModules.instagramAlt) {
-        try {
-            const result = await localModules.instagramAlt(validatedUrl);
-            if (result && result.url) {
-                validateMediaUrl(result.url);
-                const res = { url: result.url, type: "video" };
-                defaultCache.set(validatedUrl, res);
-                return res;
-            }
-        } catch (e) {
-            // Fall through to HTML extraction
-        }
-    }
-
-    // 2. Controlled HTML extraction
-    try {
-        const html = await secureFetchHtml(validatedUrl, SUPPORTED_SOURCE_DOMAINS.instagram);
-        const decode = s => s?.replace(/\\"/g, '"').replace(/\\u0026/g, "&");
-
-        const match1 = html.match(/"video_versions":\[\{[^}]*"url":"([^"]+)"/);
-        if (match1 && match1[1]) {
-            const link = decode(match1[1]);
-            validateMediaUrl(link);
-            const res = { url: link, type: "video" };
-            defaultCache.set(validatedUrl, res);
-            return res;
-        }
-
-        const match2 = html.match(/"display_resources":\[\{[^}]*"src":"([^"]+)"/);
-        if (match2 && match2[1]) {
-            const link = decode(match2[1]);
-            validateMediaUrl(link);
-            const res = { url: link, type: "image" };
-            defaultCache.set(validatedUrl, res);
-            return res;
-        }
-
-        const match3 = html.match(/<meta\s+property=["']og:video["']\s+content=["']([^"']+)["']/i);
-        if (match3 && match3[1]) {
-            const link = decode(match3[1]);
-            validateMediaUrl(link);
-            const res = { url: link, type: "video" };
-            defaultCache.set(validatedUrl, res);
-            return res;
-        }
-
-        const match4 = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
-        if (match4 && match4[1]) {
-            const link = decode(match4[1]);
-            validateMediaUrl(link);
-            const res = { url: link, type: "image" };
-            defaultCache.set(validatedUrl, res);
-            return res;
-        }
-    } catch (e) {
-        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
-            throw e;
-        }
-    }
-
-    throw new ValidationError(
-        "Could not find downloadable media for this Instagram link. Ensure it is public and contains visible media.",
-        "EXTRACTION_FAILED"
-    );
-}
-
-// --- Facebook ---
-async function getFacebookMedia(validatedUrl) {
-    const cached = defaultCache.get(validatedUrl);
-    if (cached) return cached;
-
-    if (localModules.universal) {
-        try {
-            const out = await localModules.universal(validatedUrl);
-            const vid = out?.url || out?.video || out?.downloadUrl;
-            if (vid) {
-                validateMediaUrl(vid);
-                const res = { url: vid, type: "video" };
-                defaultCache.set(validatedUrl, res);
-                return res;
-            }
-        } catch (e) { }
-    }
-
-    try {
-        const html = await secureFetchHtml(validatedUrl, SUPPORTED_SOURCE_DOMAINS.facebook);
-        const meta = extractFromMeta(html);
-        if (meta) {
-            validateMediaUrl(meta);
-            const res = { url: meta, type: "video" };
-            defaultCache.set(validatedUrl, res);
-            return res;
-        }
-    } catch (e) {
-        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
-            throw e;
-        }
-    }
-
-    throw new ValidationError(
-        "Could not retrieve media from this Facebook link. Ensure it is public.",
-        "EXTRACTION_FAILED"
-    );
-}
-
-// --- Twitter / X ---
-async function getTwitterMedia(validatedUrl) {
-    const cached = defaultCache.get(validatedUrl);
-    if (cached) return cached;
-
-    if (localModules.twitter) {
-        try {
-            const result = await localModules.twitter(validatedUrl);
-            const vid = result?.download?.[0]?.url || result?.url;
-            if (vid) {
-                validateMediaUrl(vid);
-                const res = { url: vid, type: "video" };
-                defaultCache.set(validatedUrl, res);
-                return res;
-            }
-        } catch (e) { }
-    }
-
-    throw new ValidationError(
-        "Could not retrieve media from this tweet. Ensure it is public and contains a video.",
-        "EXTRACTION_FAILED"
-    );
-}
-
-// --- Pinterest ---
-async function getPinterestMedia(validatedUrl) {
-    let targetUrl = validatedUrl;
-
-    // Handle pin.it short links securely with redirect validation
-    const parsed = new URL(targetUrl);
-    if (parsed.hostname === "pin.it" || parsed.hostname.endsWith(".pin.it")) {
-        try {
-            const { finalUrl, clearTimeout: clearTimer } = await secureFetch(targetUrl, {
-                allowedDomains: SUPPORTED_SOURCE_DOMAINS.pinterest,
-                maxRedirects: 3,
-                timeoutMs: 8000
-            });
-            clearTimer();
-            targetUrl = validateSourceUrl(finalUrl, "pinterest");
-        } catch (e) {
-            throw new ValidationError("Could not resolve Pinterest short link.", "EXTRACTION_FAILED");
-        }
-    }
-
-    const cached = defaultCache.get(targetUrl);
-    if (cached) return cached;
-
-    if (localModules.pinterest) {
-        try {
-            const result = await localModules.pinterest(targetUrl);
-            const pin = result?.url || result?.[0]?.url;
-            if (pin) {
-                validateMediaUrl(pin);
-                const res = { url: pin, type: pin.endsWith(".mp4") ? "video" : "image" };
-                defaultCache.set(targetUrl, res);
-                return res;
-            }
-        } catch (e) { }
-    }
-
-    try {
-        const html = await secureFetchHtml(targetUrl, SUPPORTED_SOURCE_DOMAINS.pinterest);
-        const extracted = extractMediaFromHtml(html);
-        if (extracted && extracted.url) {
-            validateMediaUrl(extracted.url);
-            const res = { url: extracted.url, type: extracted.type };
-            defaultCache.set(targetUrl, res);
-            return res;
-        }
-    } catch (e) {
-        if (e instanceof ValidationError || e instanceof SSRFError || e instanceof SecurityHTTPError) {
-            throw e;
-        }
-    }
-
-    throw new ValidationError(
-        "Could not find media for this Pinterest link. Ensure it is public.",
-        "EXTRACTION_FAILED"
-    );
-}
-
-// --- YouTube ---
-async function getYouTubeMedia(validatedUrl) {
-    const cached = defaultCache.get(validatedUrl);
-    if (cached) return cached;
-
-    try {
-        const info = await ytdl_exec.getInfo(validatedUrl);
-        if (!info || !info.formats) {
-            throw new ValidationError("Could not retrieve video stream details.", "EXTRACTION_FAILED");
-        }
-
-        const format =
-            info.formats.find(f => f.hasVideo && f.hasAudio && f.container === "mp4") ||
-            info.formats.find(f => f.hasVideo && f.container === "mp4") ||
-            info.formats.find(f => f.mimeType && f.mimeType.includes("video"));
-
-        if (!format || !format.url) {
-            throw new ValidationError("No downloadable format available.", "EXTRACTION_FAILED");
-        }
-
-        validateMediaUrl(format.url);
-
-        const result = {
-            url: format.url,
-            type: "video",
-            title: info.videoDetails?.title || "Reeva YouTube Video"
-        };
-
-        defaultCache.set(validatedUrl, result);
-        return result;
-
-    } catch (err) {
-        if (err instanceof ValidationError) throw err;
-        throw new ValidationError("Could not retrieve media from YouTube.", "EXTRACTION_FAILED");
-    }
-}
-
 // ================== METHOD ENFORCEMENT ==================
 // Reject non-GET HTTP methods cleanly on API endpoints
 app.use("/api", (req, res, next) => {
@@ -429,82 +148,24 @@ app.use("/api", (req, res, next) => {
 
 // ================== MAIN EXTRACTION ENDPOINT ==================
 app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
-    const startTime = Date.now();
-    let platform = "unknown";
-
     try {
-        platform = validatePlatform(req.params.platform);
-        const { url } = req.query;
+        const extraction = await extractMedia({
+            platform: req.params.platform,
+            sourceUrl: req.query.url,
+            requestId: req.id
+        });
 
-        if (!url) {
-            return res.status(400).json({
-                error: {
-                    code: "MISSING_URL",
-                    message: "Please paste a video link first."
-                },
-                requestId: req.id
-            });
-        }
-
-        // Validate source URL strictly
-        const validatedUrl = validateSourceUrl(url, platform);
-
-        let result;
-        switch (platform) {
-            case "instagram":
-                result = await getInstagramMedia(validatedUrl);
-                break;
-            case "facebook":
-                result = await getFacebookMedia(validatedUrl);
-                break;
-            case "twitter":
-            case "x":
-                result = await getTwitterMedia(validatedUrl);
-                break;
-            case "pinterest":
-                result = await getPinterestMedia(validatedUrl);
-                break;
-            case "youtube":
-                result = await getYouTubeMedia(validatedUrl);
-                break;
-            default:
-                return res.status(400).json({
-                    error: {
-                        code: "UNSUPPORTED_PLATFORM",
-                        message: "This platform is not supported."
-                    },
-                    requestId: req.id
-                });
-        }
-
-        if (!result || !result.url) {
-            return res.status(404).json({
-                error: {
-                    code: "MEDIA_NOT_FOUND",
-                    message: `Could not find downloadable media for this ${platform} post.`
-                },
-                requestId: req.id
-            });
-        }
+        const { media } = extraction;
 
         // Register the validated upstream URL and generate an opaque media ID
         const registered = defaultRegistry.registerMedia({
-            upstreamUrl: result.url,
-            platform,
-            type: result.type || "video",
-            title: result.title || "Media"
+            upstreamUrl: media.url,
+            platform: media.platform,
+            type: media.type || "video",
+            title: media.title || "Media"
         });
 
-        logger.info({
-            requestId: req.id,
-            platform,
-            operation: "extract",
-            status: "success",
-            durationMs: Date.now() - startTime,
-            url: validatedUrl
-        });
-
-        // Return opaque media references
+        // Return opaque media references (fully matching existing frontend expectations)
         res.json({
             media: registered,
             streamUrl: `/api/media/${registered.id}`,
@@ -514,17 +175,16 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
         });
 
     } catch (err) {
-        logger.error({
-            requestId: req.id,
-            platform,
-            operation: "extract",
-            status: "error",
-            durationMs: Date.now() - startTime,
-            message: err.message
-        });
+        let statusCode = 502;
+        let errorCode = "EXTRACTION_FAILED";
 
-        const statusCode = err instanceof ValidationError ? 400 : 502;
-        const errorCode = err.code || "EXTRACTION_FAILED";
+        if (err instanceof ValidationError || err instanceof SSRFError) {
+            statusCode = 400;
+            errorCode = err.code || "VALIDATION_FAILED";
+        } else if (err instanceof ExtractionError) {
+            statusCode = err.statusCode || 502;
+            errorCode = err.code || "EXTRACTION_FAILED";
+        }
 
         res.status(statusCode).json({
             error: {
