@@ -209,10 +209,181 @@ test("Extraction Test 7: Primary provider fails and fallback also fails (control
     );
 });
 
-// ==================== PHASE 3.1 VERIFIED PROVIDER INTEGRATION TESTS ====================
+// ==================== PHASE 3.4 INSTAGRAM CRAWLER EXTRACTION & ADAPTER TESTS ====================
 
 // --- INSTAGRAM ---
-test("Instagram Integration: Adapter calls instagramGetUrl and maps media_details output", async () => {
+test("Instagram Integration: Primary crawler HTML extraction maps og:video and title", async () => {
+    const mockFetchHtml = async () => `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/primary_reel.mp4" />
+                <meta property="og:title" content="Awesome Public Reel" />
+            </head>
+        </html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/primary_reel.mp4");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Awesome Public Reel");
+
+    const validated = validateExtractionResult(result, "instagram");
+    assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/primary_reel.mp4");
+});
+
+test("Instagram Integration: Passes crawler User-Agent in headers to fetchHtml", async () => {
+    let capturedOptions = null;
+    const mockFetchHtml = async (url, domains, maxBytes, options) => {
+        capturedOptions = options;
+        return `<html><head><meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/reel.mp4" /></head></html>`;
+    };
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.ok(capturedOptions);
+    assert.ok(capturedOptions.headers);
+    assert.equal(
+        capturedOptions.headers["User-Agent"],
+        "facebookexternalhit/1.1 (+https://www.facebook.com/externalhit_uatext.php)"
+    );
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/reel.mp4");
+});
+
+test("Instagram Integration: Extracts og:video:url correctly", async () => {
+    const mockFetchHtml = async () => `
+        <html><head><meta property="og:video:url" content="https://scontent.cdninstagram.com/v/t50/video_url_test.mp4" /></head></html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/video_url_test.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Instagram Integration: Extracts og:video:secure_url correctly", async () => {
+    const mockFetchHtml = async () => `
+        <html><head><meta property="og:video:secure_url" content="https://scontent.cdninstagram.com/v/t50/secure_url_test.mp4" /></head></html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/secure_url_test.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Instagram Integration: Extracts video with reversed attributes (content before property)", async () => {
+    const mockFetchHtml = async () => `
+        <html><head><meta content="https://scontent.cdninstagram.com/v/t50/reversed_attr.mp4" property="og:video" /></head></html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/reversed_attr.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Instagram Integration: Video post with only og:image is NOT treated as video", async () => {
+    const mockFetchHtml = async () => `
+        <html>
+            <head>
+                <meta property="og:image" content="https://scontent.cdninstagram.com/preview_only.jpg" />
+                <title>Some Reel Preview</title>
+            </head>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: mockFetchHtml,
+            provider: null
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            return true;
+        }
+    );
+});
+
+test("Instagram Integration: Photo post without video returns og:image as image", async () => {
+    const mockFetchHtml = async () => `
+        <html>
+            <head>
+                <meta property="og:image" content="https://scontent.cdninstagram.com/photo.jpg" />
+                <meta property="og:title" content="A Beautiful Photo" />
+            </head>
+        </html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/p/DA123456789/", {
+        fetchHtml: mockFetchHtml,
+        provider: null
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/photo.jpg");
+    assert.equal(result.type, "image");
+    assert.equal(result.title, "A Beautiful Photo");
+});
+
+test("Instagram Integration: Candidate URL from unapproved domain is rejected by validateMediaUrl", async () => {
+    const mockFetchHtml = async () => `
+        <html>
+            <head>
+                <meta property="og:video" content="https://evil-unapproved-domain.com/malicious.mp4" />
+            </head>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNAPPROVED_MEDIA_DOMAIN");
+            return true;
+        }
+    );
+});
+
+test("Instagram Integration: Login barrier shell classified as PLATFORM_CHALLENGE", async () => {
+    const mockFetchHtml = async () => `
+        <!DOCTYPE html>
+        <html>
+            <head><title>Login • Instagram</title></head>
+            <body>
+                <a href="/accounts/login/">Log In</a>
+            </body>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: mockFetchHtml,
+            provider: null
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+            assert.equal(err.statusCode, 403);
+            return true;
+        }
+    );
+});
+
+test("Instagram Integration: Secondary provider maps media_details output when primary HTML yields no media", async () => {
     let calledWithUrl = null;
 
     const mockInstagramDirect = {
@@ -232,6 +403,7 @@ test("Instagram Integration: Adapter calls instagramGetUrl and maps media_detail
     };
 
     const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: async () => "<html></html>",
         provider: mockInstagramDirect
     });
 
@@ -244,7 +416,7 @@ test("Instagram Integration: Adapter calls instagramGetUrl and maps media_detail
     assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/reel_from_media_details.mp4");
 });
 
-test("Instagram Integration: Adapter maps url_list when media_details is empty", async () => {
+test("Instagram Integration: Secondary provider maps url_list when media_details is empty", async () => {
     const mockInstagramDirect = {
         instagramGetUrl: async () => ({
             results_number: 1,
@@ -253,6 +425,7 @@ test("Instagram Integration: Adapter maps url_list when media_details is empty",
     };
 
     const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        fetchHtml: async () => "<html></html>",
         provider: mockInstagramDirect
     });
 
@@ -260,27 +433,24 @@ test("Instagram Integration: Adapter maps url_list when media_details is empty",
     assert.equal(result.type, "video");
 });
 
-test("Instagram Integration: Malformed provider output falls through to HTML fallback", async () => {
-    const mockInstagramDirect = {
-        instagramGetUrl: async () => ({
-            results_number: 0,
-            url_list: [],
-            media_details: []
-        })
+test("Instagram Integration: Upstream HTTP 401/403 classified as PLATFORM_CHALLENGE", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Failed to load page (401)", 401);
     };
 
-    const mockFetchHtml = async () => `
-        <html>
-            <meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4" />
-        </html>
-    `;
-
-    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
-        provider: mockInstagramDirect,
-        fetchHtml: mockFetchHtml
-    });
-
-    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: mockFetchHtml,
+            provider: null
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+            assert.equal(err.statusCode, 403);
+            return true;
+        }
+    );
 });
 
 // --- TWITTER / X ---
@@ -447,9 +617,19 @@ test("HTML Entity Decoding: decodeUrl decodes &amp;, escaped quotes, and unicode
     assert.equal(output, "https://cdn.example.com/video.mp4?a=1&b=2\"&c=&d");
 });
 
+test("HTML Entity Decoding: decodeUrl decodes &quot;, &#39;, &#x27;, and escaped slashes", () => {
+    const input = "https:\\/\\/cdn.example.com\\/video.mp4?name=&quot;test&quot;&amp;tag=&#39;cool&#39;&amp;flag=&#x27;ok&#x27;";
+    assert.equal(decodeUrl(input), "https://cdn.example.com/video.mp4?name=\"test\"&tag='cool'&flag='ok'");
+});
+
 test("HTML Entity Decoding: extractFromMeta decodes &amp; correctly", () => {
     const html = `<meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/test.mp4?a=1&amp;b=2" />`;
     assert.equal(extractFromMeta(html), "https://video.xx.fbcdn.net/v/t42/test.mp4?a=1&b=2");
+});
+
+test("HTML Entity Decoding: extractFromMeta supports reversed attribute order and decodes entities", () => {
+    const html = `<meta content="https://video.xx.fbcdn.net/v/t42/reversed.mp4?a=1&amp;b=2" property="og:video" />`;
+    assert.equal(extractFromMeta(html), "https://video.xx.fbcdn.net/v/t42/reversed.mp4?a=1&b=2");
 });
 
 test("HTML Entity Decoding: extractMediaFromHtml decodes &amp; correctly", () => {
@@ -459,24 +639,26 @@ test("HTML Entity Decoding: extractMediaFromHtml decodes &amp; correctly", () =>
     assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/vid.mp4?a=1&b=2");
 });
 
-// ==================== SECURITY SHORT-CIRCUIT TEST ====================
+// ==================== SECURITY SHORT-CIRCUIT TESTS ====================
 
-test("Security Short-Circuit: Real Instagram adapter halts immediately on security violation without invoking fallback", async () => {
-    let fallbackHtmlCalled = false;
+test("Security Short-Circuit: Real Instagram adapter halts immediately on primary security violation without invoking secondary fallback", async () => {
+    let fallbackProviderCalled = false;
 
     const mockPrimaryWithSecurityViolation = () => {
         throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
     };
 
-    const mockFetchHtml = async () => {
-        fallbackHtmlCalled = true;
-        return `<html><meta property="og:video" content="https://scontent.cdninstagram.com/fallback.mp4" /></html>`;
+    const mockProvider = {
+        instagramGetUrl: async () => {
+            fallbackProviderCalled = true;
+            return { results_number: 1, url_list: ["https://scontent.cdninstagram.com/fallback.mp4"] };
+        }
     };
 
     await assert.rejects(
         () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
-            provider: mockPrimaryWithSecurityViolation,
-            fetchHtml: mockFetchHtml
+            fetchHtml: mockPrimaryWithSecurityViolation,
+            provider: mockProvider
         }),
         (err) => {
             assert.ok(err instanceof ValidationError);
@@ -485,7 +667,29 @@ test("Security Short-Circuit: Real Instagram adapter halts immediately on securi
         }
     );
 
-    assert.equal(fallbackHtmlCalled, false, "Fallback MUST NOT execute when security policy is violated");
+    assert.equal(fallbackProviderCalled, false, "Fallback MUST NOT execute when security policy is violated");
+});
+
+test("Security Short-Circuit: Secondary provider security violation halts immediately without swallowing", async () => {
+    const mockFetchHtml = async () => "<html></html>";
+
+    const mockProvider = {
+        instagramGetUrl: async () => {
+            throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
+        }
+    };
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: mockFetchHtml,
+            provider: mockProvider
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "SSRF_PROHIBITED");
+            return true;
+        }
+    );
 });
 
 // ==================== TIMEOUT SEMANTICS TESTS (TESTS A, B, C, D, E) ====================
