@@ -7,6 +7,9 @@ const assert = require("node:assert/strict");
 const {
     createExtractionOrchestrator,
     validateExtractionResult,
+    decodeUrl,
+    extractFromMeta,
+    extractMediaFromHtml,
     withTimeout,
     ExtractionError,
     EXTRACTION_ERROR_CODES
@@ -14,7 +17,9 @@ const {
 
 const { extractInstagram } = require("../lib/extraction/adapters/instagram.cjs");
 const { extractFacebook } = require("../lib/extraction/adapters/facebook.cjs");
+const { extractTwitter } = require("../lib/extraction/adapters/twitter.cjs");
 const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
+const { extractYouTube } = require("../lib/extraction/adapters/youtube.cjs");
 const { ValidationError } = require("../lib/url-validator.cjs");
 const { BoundedCache } = require("../lib/cache.cjs");
 
@@ -204,108 +209,254 @@ test("Extraction Test 7: Primary provider fails and fallback also fails (control
     );
 });
 
-// ==================== REAL ADAPTER FALLBACK TESTS ====================
+// ==================== PHASE 3.1 VERIFIED PROVIDER INTEGRATION TESTS ====================
 
-test("Adapter Fallback: Real Instagram adapter invokes HTML fallback when primary provider fails", async () => {
-    let primaryCalled = false;
-    let fallbackHtmlCalled = false;
+// --- INSTAGRAM ---
+test("Instagram Integration: Adapter calls instagramGetUrl and maps media_details output", async () => {
+    let calledWithUrl = null;
 
-    const mockPrimary = () => {
-        primaryCalled = true;
-        throw new Error("Instagram primary library failed");
-    };
-
-    const mockFetchHtml = async () => {
-        fallbackHtmlCalled = true;
-        return `
-            <html>
-                <head>
-                    <meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4" />
-                </head>
-            </html>
-        `;
+    const mockInstagramDirect = {
+        instagramGetUrl: async (url) => {
+            calledWithUrl = url;
+            return {
+                results_number: 1,
+                post_info: { caption: "Awesome Reel #test" },
+                media_details: [
+                    {
+                        type: "video",
+                        url: "https://scontent.cdninstagram.com/v/t50/reel_from_media_details.mp4"
+                    }
+                ]
+            };
+        }
     };
 
     const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
-        provider: mockPrimary,
-        fetchHtml: mockFetchHtml
+        provider: mockInstagramDirect
     });
 
-    assert.equal(primaryCalled, true, "Primary provider must be executed");
-    assert.equal(fallbackHtmlCalled, true, "Fallback HTML fetcher must be executed upon primary failure");
-    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
+    assert.equal(calledWithUrl, "https://www.instagram.com/reel/DA123456789/");
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/reel_from_media_details.mp4");
     assert.equal(result.type, "video");
+    assert.equal(result.title, "Awesome Reel #test");
 
     const validated = validateExtractionResult(result, "instagram");
-    assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
+    assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/reel_from_media_details.mp4");
 });
 
-test("Adapter Fallback: Real Facebook adapter invokes HTML fallback when primary provider fails", async () => {
-    let primaryCalled = false;
-    let fallbackHtmlCalled = false;
-
-    const mockPrimary = () => {
-        primaryCalled = true;
-        throw new Error("Facebook primary downloader failed");
+test("Instagram Integration: Adapter maps url_list when media_details is empty", async () => {
+    const mockInstagramDirect = {
+        instagramGetUrl: async () => ({
+            results_number: 1,
+            url_list: ["https://scontent.cdninstagram.com/v/t50/reel_from_url_list.mp4"]
+        })
     };
 
-    const mockFetchHtml = async () => {
-        fallbackHtmlCalled = true;
-        return `
-            <html>
-                <head>
-                    <meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4" />
-                </head>
-            </html>
-        `;
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        provider: mockInstagramDirect
+    });
+
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/reel_from_url_list.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Instagram Integration: Malformed provider output falls through to HTML fallback", async () => {
+    const mockInstagramDirect = {
+        instagramGetUrl: async () => ({
+            results_number: 0,
+            url_list: [],
+            media_details: []
+        })
     };
 
-    const result = await extractFacebook("https://www.facebook.com/watch?v=1020304050", {
-        provider: mockPrimary,
+    const mockFetchHtml = async () => `
+        <html>
+            <meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4" />
+        </html>
+    `;
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        provider: mockInstagramDirect,
         fetchHtml: mockFetchHtml
     });
 
-    assert.equal(primaryCalled, true);
-    assert.equal(fallbackHtmlCalled, true);
-    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4");
-    assert.equal(result.type, "video");
-
-    const validated = validateExtractionResult(result, "facebook");
-    assert.equal(validated.url, "https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4");
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
 });
 
-test("Adapter Fallback: Real Pinterest adapter invokes HTML fallback when primary provider fails", async () => {
-    let primaryCalled = false;
-    let fallbackHtmlCalled = false;
+// --- TWITTER / X ---
+test("Twitter Integration: Adapter calls TwitterDL and maps media[].videos[].url", async () => {
+    let calledWithUrl = null;
 
-    const mockPrimary = () => {
-        primaryCalled = true;
-        throw new Error("Pinterest primary scraper failed");
+    const mockTwitterModule = {
+        TwitterDL: async (url) => {
+            calledWithUrl = url;
+            return {
+                status: "success",
+                result: {
+                    description: "Interesting tweet video",
+                    media: [
+                        {
+                            type: "video",
+                            videos: [
+                                { bitrate: 256000, url: "https://video.twimg.com/low.mp4" },
+                                { bitrate: 832000, url: "https://video.twimg.com/high.mp4" }
+                            ]
+                        }
+                    ]
+                }
+            };
+        }
     };
 
-    const mockFetchHtml = async () => {
-        fallbackHtmlCalled = true;
-        return `
-            <html>
-                <head>
-                    <meta property="og:image" content="https://i.pinimg.com/736x/pinterest_fallback.jpg" />
-                </head>
-            </html>
-        `;
+    const result = await extractTwitter("https://twitter.com/user/status/1234567890123456789", {
+        provider: mockTwitterModule
+    });
+
+    assert.equal(calledWithUrl, "https://twitter.com/user/status/1234567890123456789");
+    // Must select the highest bitrate video variant
+    assert.equal(result.url, "https://video.twimg.com/high.mp4");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Interesting tweet video");
+
+    const validated = validateExtractionResult(result, "twitter");
+    assert.equal(validated.url, "https://video.twimg.com/high.mp4");
+});
+
+test("Twitter Integration: Handles upstream error responses properly", async () => {
+    const mockTwitterModule = {
+        TwitterDL: async () => ({
+            status: "error",
+            message: "Failed to get Guest Token. Authorization is invalid!"
+        })
     };
+
+    await assert.rejects(
+        () => extractTwitter("https://twitter.com/user/status/1234567890123456789", {
+            provider: mockTwitterModule
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
+            assert.match(err.message, /Failed to get Guest Token/);
+            return true;
+        }
+    );
+});
+
+// --- YOUTUBE ---
+test("YouTube Integration: Adapter calls getInfo() and selects valid mp4 format", async () => {
+    let getInfoCalledUrl = null;
+
+    const mockYtdl = {
+        getInfo: async (url) => {
+            getInfoCalledUrl = url;
+            return {
+                videoDetails: { title: "YouTube Video Title" },
+                formats: [
+                    { container: "webm", hasVideo: true, hasAudio: false, url: "https://rr1---sn-abc.googlevideo.com/webm_video" },
+                    { container: "mp4", hasVideo: true, hasAudio: true, url: "https://rr1---sn-abc.googlevideo.com/mp4_combined" }
+                ]
+            };
+        }
+    };
+
+    const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        provider: mockYtdl
+    });
+
+    assert.equal(getInfoCalledUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    assert.equal(result.url, "https://rr1---sn-abc.googlevideo.com/mp4_combined");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "YouTube Video Title");
+
+    const validated = validateExtractionResult(result, "youtube");
+    assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/mp4_combined");
+});
+
+test("YouTube Integration: Rejects when no downloadable mp4 format is available", async () => {
+    const mockYtdl = {
+        getInfo: async () => ({
+            videoDetails: { title: "Audio Only" },
+            formats: [
+                { container: "m4a", hasVideo: false, hasAudio: true, mimeType: "audio/mp4", url: "https://googlevideo.com/audio" }
+            ]
+        })
+    };
+
+    await assert.rejects(
+        () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+            provider: mockYtdl
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.UNSUPPORTED_MEDIA);
+            return true;
+        }
+    );
+});
+
+// --- PINTEREST & FACEBOOK (REMOVED UNSAFE PACKAGES) ---
+test("Pinterest Integration: Direct HTML extraction works with deterministic fixture and decodes &amp;", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:image" content="https://i.pinimg.com/736x/test_pin.jpg?token=abc&amp;width=736" />
+            </head>
+        </html>
+    `;
 
     const result = await extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
-        provider: mockPrimary,
-        fetchHtml: mockFetchHtml
+        fetchHtml: async () => fixtureHtml
     });
 
-    assert.equal(primaryCalled, true);
-    assert.equal(fallbackHtmlCalled, true);
-    assert.equal(result.url, "https://i.pinimg.com/736x/pinterest_fallback.jpg");
+    // Encoded &amp; must be decoded to clean &
+    assert.equal(result.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
     assert.equal(result.type, "image");
 
     const validated = validateExtractionResult(result, "pinterest");
-    assert.equal(validated.url, "https://i.pinimg.com/736x/pinterest_fallback.jpg");
+    assert.equal(validated.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
+});
+
+test("Facebook Integration: Safe HTML extraction works and decodes &amp; without third-party IP proxy", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&amp;sig=123" />
+            </head>
+        </html>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/watch?v=1020304050", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&sig=123");
+    assert.equal(result.type, "video");
+
+    const validated = validateExtractionResult(result, "facebook");
+    assert.equal(validated.url, "https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&sig=123");
+});
+
+// ==================== HTML ENTITY DECODING TESTS ====================
+
+test("HTML Entity Decoding: decodeUrl decodes &amp;, escaped quotes, and unicode ampersands", () => {
+    const input = "https://cdn.example.com/video.mp4?a=1&amp;b=2\\\"&amp;c=\\u0026d";
+    const output = decodeUrl(input);
+    assert.equal(output, "https://cdn.example.com/video.mp4?a=1&b=2\"&c=&d");
+});
+
+test("HTML Entity Decoding: extractFromMeta decodes &amp; correctly", () => {
+    const html = `<meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/test.mp4?a=1&amp;b=2" />`;
+    assert.equal(extractFromMeta(html), "https://video.xx.fbcdn.net/v/t42/test.mp4?a=1&b=2");
+});
+
+test("HTML Entity Decoding: extractMediaFromHtml decodes &amp; correctly", () => {
+    const html = `{"video_versions":[{"url":"https://scontent.cdninstagram.com/v/t50/vid.mp4?a=1&amp;b=2"}]}`;
+    const result = extractMediaFromHtml(html);
+    assert.ok(result);
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/vid.mp4?a=1&b=2");
 });
 
 // ==================== SECURITY SHORT-CIRCUIT TEST ====================
