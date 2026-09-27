@@ -12,9 +12,13 @@ const {
     EXTRACTION_ERROR_CODES
 } = require("../lib/extraction/index.cjs");
 
+const { extractInstagram } = require("../lib/extraction/adapters/instagram.cjs");
+const { extractFacebook } = require("../lib/extraction/adapters/facebook.cjs");
+const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
 const { ValidationError } = require("../lib/url-validator.cjs");
-const { SSRFError } = require("../lib/ssrf-filter.cjs");
 const { BoundedCache } = require("../lib/cache.cjs");
+
+// ==================== CORE ORCHESTRATOR TESTS ====================
 
 // Test 1: Valid normalized extraction result
 test("Extraction Test 1: Valid normalized extraction result", async () => {
@@ -49,7 +53,7 @@ test("Extraction Test 2: Malformed provider result rejected", async () => {
         cache: new BoundedCache(10, 60000),
         adapters: {
             instagram: async () => ({
-                url: 12345, // invalid type
+                url: 12345, // invalid non-string URL
                 type: "video"
             })
         }
@@ -74,7 +78,7 @@ test("Extraction Test 3: Provider returns no media", async () => {
     const orchestrator = createExtractionOrchestrator({
         cache: new BoundedCache(10, 60000),
         adapters: {
-            facebook: async () => null // no media found
+            facebook: async () => null // no media returned
         }
     });
 
@@ -112,31 +116,14 @@ test("Extraction Test 4: Provider throws an ordinary error normalized to EXTRACT
         (err) => {
             assert.ok(err instanceof ExtractionError);
             assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
-            // Must not expose internal parser stack to user message
             assert.equal(err.message, "Failed to extract media from the requested URL.");
             return true;
         }
     );
 });
 
-// Test 5: Provider timeout/failure
-test("Extraction Test 5: Provider execution timeout", async () => {
-    const hangingPromise = new Promise((resolve) => {
-        setTimeout(resolve, 5000);
-    });
-
-    await assert.rejects(
-        () => withTimeout(hangingPromise, 50, "mock-provider"),
-        (err) => {
-            assert.ok(err instanceof ExtractionError);
-            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
-            return true;
-        }
-    );
-});
-
-// Test 6: Provider returns an unsafe media URL (Rejected by Reeva security validation)
-test("Extraction Test 6: Provider returns an unsafe media URL (SSRF target rejected)", async () => {
+// Test 5: Provider returns an unsafe media URL (Rejected by Reeva security validation)
+test("Extraction Test 5: Provider returns an unsafe media URL (SSRF target rejected)", async () => {
     const orchestrator = createExtractionOrchestrator({
         cache: new BoundedCache(10, 60000),
         adapters: {
@@ -151,19 +138,18 @@ test("Extraction Test 6: Provider returns an unsafe media URL (SSRF target rejec
         () => orchestrator.extractMedia({
             platform: "instagram",
             sourceUrl: "https://www.instagram.com/reel/DA123456789/",
-            requestId: "req_test_06"
+            requestId: "req_test_05"
         }),
         (err) => {
             assert.ok(err instanceof ValidationError);
-            // Protocol must be strictly HTTPS
             assert.equal(err.code, "UNSUPPORTED_PROTOCOL");
             return true;
         }
     );
 });
 
-// Test 7: Provider returns an unapproved CDN
-test("Extraction Test 7: Provider returns an unapproved CDN (Expected rejection)", async () => {
+// Test 6: Provider returns an unapproved CDN
+test("Extraction Test 6: Provider returns an unapproved CDN (Expected rejection)", async () => {
     const orchestrator = createExtractionOrchestrator({
         cache: new BoundedCache(10, 60000),
         adapters: {
@@ -178,7 +164,7 @@ test("Extraction Test 7: Provider returns an unapproved CDN (Expected rejection)
         () => orchestrator.extractMedia({
             platform: "youtube",
             sourceUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-            requestId: "req_test_07"
+            requestId: "req_test_06"
         }),
         (err) => {
             assert.ok(err instanceof ValidationError);
@@ -188,58 +174,13 @@ test("Extraction Test 7: Provider returns an unapproved CDN (Expected rejection)
     );
 });
 
-// Test 8: Primary provider fails and valid fallback succeeds
-test("Extraction Test 8: Primary provider fails and valid fallback succeeds", async () => {
-    let primaryCalled = false;
-    let fallbackCalled = false;
-
-    // Simulate adapter with deliberate fallback
-    const adapterWithFallback = async () => {
-        try {
-            primaryCalled = true;
-            throw new Error("Primary third-party scraper failed");
-        } catch (e) {
-            fallbackCalled = true;
-            return {
-                url: "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4",
-                type: "video",
-                title: "Fallback Reel"
-            };
-        }
-    };
-
-    const orchestrator = createExtractionOrchestrator({
-        cache: new BoundedCache(10, 60000),
-        adapters: {
-            instagram: adapterWithFallback
-        }
-    });
-
-    const result = await orchestrator.extractMedia({
-        platform: "instagram",
-        sourceUrl: "https://www.instagram.com/reel/DA123456789/",
-        requestId: "req_test_08"
-    });
-
-    assert.equal(primaryCalled, true);
-    assert.equal(fallbackCalled, true);
-    assert.equal(result.success, true);
-    assert.equal(result.media.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
-});
-
-// Test 9: Primary provider fails and fallback also fails
-test("Extraction Test 9: Primary provider fails and fallback also fails (controlled EXTRACTION_FAILED)", async () => {
+// Test 7: Both primary and fallback fail (Controlled MEDIA_NOT_FOUND)
+test("Extraction Test 7: Primary provider fails and fallback also fails (controlled MEDIA_NOT_FOUND)", async () => {
     const failingAdapter = async () => {
-        // Primary fails
-        try {
-            throw new Error("Primary failed");
-        } catch (e) {
-            // Fallback also fails
-            throw new ExtractionError(
-                EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND,
-                "Could not find downloadable media for this Instagram link."
-            );
-        }
+        throw new ExtractionError(
+            EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND,
+            "Could not find downloadable media for this Instagram link."
+        );
     };
 
     const orchestrator = createExtractionOrchestrator({
@@ -253,7 +194,7 @@ test("Extraction Test 9: Primary provider fails and fallback also fails (control
         () => orchestrator.extractMedia({
             platform: "instagram",
             sourceUrl: "https://www.instagram.com/reel/DA123456789/",
-            requestId: "req_test_09"
+            requestId: "req_test_07"
         }),
         (err) => {
             assert.ok(err instanceof ExtractionError);
@@ -263,39 +204,128 @@ test("Extraction Test 9: Primary provider fails and fallback also fails (control
     );
 });
 
-// Test 10: Security errors do NOT trigger fallback
-test("Extraction Test 10: Security errors do NOT trigger fallback", async () => {
-    let fallbackExecuted = false;
+// ==================== REAL ADAPTER FALLBACK TESTS ====================
 
-    const securitySensitiveAdapter = async () => {
-        try {
-            // Simulate security failure during extraction
-            throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
-        } catch (err) {
-            // Crucial rule: Security errors must HALT immediately — never fall back!
-            if (err instanceof ValidationError || err instanceof SSRFError) {
-                throw err;
-            }
-            fallbackExecuted = true;
-            return {
-                url: "https://scontent.cdninstagram.com/fallback.mp4",
-                type: "video"
-            };
-        }
+test("Adapter Fallback: Real Instagram adapter invokes HTML fallback when primary provider fails", async () => {
+    let primaryCalled = false;
+    let fallbackHtmlCalled = false;
+
+    const mockPrimary = () => {
+        primaryCalled = true;
+        throw new Error("Instagram primary library failed");
     };
 
-    const orchestrator = createExtractionOrchestrator({
-        cache: new BoundedCache(10, 60000),
-        adapters: {
-            instagram: securitySensitiveAdapter
-        }
+    const mockFetchHtml = async () => {
+        fallbackHtmlCalled = true;
+        return `
+            <html>
+                <head>
+                    <meta property="og:video" content="https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4" />
+                </head>
+            </html>
+        `;
+    };
+
+    const result = await extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+        provider: mockPrimary,
+        fetchHtml: mockFetchHtml
     });
 
+    assert.equal(primaryCalled, true, "Primary provider must be executed");
+    assert.equal(fallbackHtmlCalled, true, "Fallback HTML fetcher must be executed upon primary failure");
+    assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
+    assert.equal(result.type, "video");
+
+    const validated = validateExtractionResult(result, "instagram");
+    assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
+});
+
+test("Adapter Fallback: Real Facebook adapter invokes HTML fallback when primary provider fails", async () => {
+    let primaryCalled = false;
+    let fallbackHtmlCalled = false;
+
+    const mockPrimary = () => {
+        primaryCalled = true;
+        throw new Error("Facebook primary downloader failed");
+    };
+
+    const mockFetchHtml = async () => {
+        fallbackHtmlCalled = true;
+        return `
+            <html>
+                <head>
+                    <meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4" />
+                </head>
+            </html>
+        `;
+    };
+
+    const result = await extractFacebook("https://www.facebook.com/watch?v=1020304050", {
+        provider: mockPrimary,
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(primaryCalled, true);
+    assert.equal(fallbackHtmlCalled, true);
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4");
+    assert.equal(result.type, "video");
+
+    const validated = validateExtractionResult(result, "facebook");
+    assert.equal(validated.url, "https://video.xx.fbcdn.net/v/t42/facebook_fallback.mp4");
+});
+
+test("Adapter Fallback: Real Pinterest adapter invokes HTML fallback when primary provider fails", async () => {
+    let primaryCalled = false;
+    let fallbackHtmlCalled = false;
+
+    const mockPrimary = () => {
+        primaryCalled = true;
+        throw new Error("Pinterest primary scraper failed");
+    };
+
+    const mockFetchHtml = async () => {
+        fallbackHtmlCalled = true;
+        return `
+            <html>
+                <head>
+                    <meta property="og:image" content="https://i.pinimg.com/736x/pinterest_fallback.jpg" />
+                </head>
+            </html>
+        `;
+    };
+
+    const result = await extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
+        provider: mockPrimary,
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(primaryCalled, true);
+    assert.equal(fallbackHtmlCalled, true);
+    assert.equal(result.url, "https://i.pinimg.com/736x/pinterest_fallback.jpg");
+    assert.equal(result.type, "image");
+
+    const validated = validateExtractionResult(result, "pinterest");
+    assert.equal(validated.url, "https://i.pinimg.com/736x/pinterest_fallback.jpg");
+});
+
+// ==================== SECURITY SHORT-CIRCUIT TEST ====================
+
+test("Security Short-Circuit: Real Instagram adapter halts immediately on security violation without invoking fallback", async () => {
+    let fallbackHtmlCalled = false;
+
+    const mockPrimaryWithSecurityViolation = () => {
+        throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
+    };
+
+    const mockFetchHtml = async () => {
+        fallbackHtmlCalled = true;
+        return `<html><meta property="og:video" content="https://scontent.cdninstagram.com/fallback.mp4" /></html>`;
+    };
+
     await assert.rejects(
-        () => orchestrator.extractMedia({
-            platform: "instagram",
-            sourceUrl: "https://www.instagram.com/reel/DA123456789/",
-            requestId: "req_test_10"
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            provider: mockPrimaryWithSecurityViolation,
+            fetchHtml: mockFetchHtml
         }),
         (err) => {
             assert.ok(err instanceof ValidationError);
@@ -304,11 +334,103 @@ test("Extraction Test 10: Security errors do NOT trigger fallback", async () => 
         }
     );
 
-    // Fallback MUST NOT have run
-    assert.equal(fallbackExecuted, false, "Fallback must not execute when a security error occurs");
+    assert.equal(fallbackHtmlCalled, false, "Fallback MUST NOT execute when security policy is violated");
 });
 
-// Additional coverage: Result Validator
+// ==================== TIMEOUT SEMANTICS TESTS (TESTS A, B, C, D, E) ====================
+
+// Test A: Cancellable mock operation receives AbortSignal
+test("Timeout Test A: Cancellable mock operation receives AbortSignal and aborts on timeout", async () => {
+    let providerSawAbort = false;
+
+    const cancellableOp = ({ signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => {
+            providerSawAbort = true;
+            reject(new Error("Operation aborted by controller"));
+        });
+    });
+
+    await assert.rejects(
+        () => withTimeout(cancellableOp, 50, "cancellable-test-provider"),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            assert.equal(err.details.cancellable, true);
+            assert.equal(err.details.cancelled, true);
+            return true;
+        }
+    );
+
+    assert.equal(providerSawAbort, true, "Provider operation must observe AbortSignal on timeout");
+});
+
+// Test B: Non-cancellable third-party promise
+test("Timeout Test B: Non-cancellable third-party promise bounds waiting without claiming fake cancellation", async () => {
+    const nonCancellablePromise = new Promise((resolve) => {
+        setTimeout(resolve, 5000);
+    });
+
+    await assert.rejects(
+        () => withTimeout(nonCancellablePromise, 50, "non-cancellable-library"),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            assert.equal(err.details.cancellable, false);
+            assert.equal(err.details.cancelled, false);
+            return true;
+        }
+    );
+});
+
+// Test C: Provider completes before timeout
+test("Timeout Test C: Provider completes successfully before timeout", async () => {
+    const fastOp = async ({ signal }) => {
+        assert.equal(signal.aborted, false);
+        return { data: "success_data" };
+    };
+
+    const res = await withTimeout(fastOp, 500, "fast-provider");
+    assert.deepEqual(res, { data: "success_data" });
+});
+
+// Test D: Provider fails before timeout
+test("Timeout Test D: Provider fails before timeout with normal error", async () => {
+    const failingOp = async () => {
+        throw new Error("Immediate network disconnect");
+    };
+
+    await assert.rejects(
+        () => withTimeout(failingOp, 500, "failing-provider"),
+        (err) => {
+            assert.equal(err.message, "Immediate network disconnect");
+            return true;
+        }
+    );
+});
+
+// Test E: Unhandled rejection prevention on late failures
+test("Timeout Test E: Late rejection on non-cancellable promise after timeout does not cause unhandled rejection", async () => {
+    let rejectLate;
+    const latePromise = new Promise((_, reject) => {
+        rejectLate = reject;
+    });
+
+    await assert.rejects(
+        () => withTimeout(latePromise, 30, "late-failing-provider"),
+        (err) => {
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            return true;
+        }
+    );
+
+    // Emulate late upstream failure occurring after Reeva already timed out
+    assert.doesNotThrow(() => {
+        rejectLate(new Error("Late network crash after timeout"));
+    });
+});
+
+// ==================== RESULT VALIDATOR TESTS ====================
+
 test("Result Validator: Rejects unsupported media types", () => {
     assert.throws(
         () => validateExtractionResult({
