@@ -588,12 +588,36 @@ test("Pinterest Integration: Direct HTML extraction works with deterministic fix
     assert.equal(validated.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
 });
 
-test("Facebook Integration: Safe HTML extraction works and decodes &amp; without third-party IP proxy", async () => {
+test("Facebook Integration: HTML with data-video-url extracts video URL", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <body>
+                <div data-video-url="https://video.famd5-3.fna.fbcdn.net/v/t42/data_video.mp4?token=abc&amp;id=123"></div>
+                <meta property="og:title" content="Facebook Watch Video" />
+            </body>
+        </html>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.famd5-3.fna.fbcdn.net/v/t42/data_video.mp4?token=abc&id=123");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Facebook Watch Video");
+
+    const validated = validateExtractionResult(result, "facebook");
+    assert.equal(validated.url, "https://video.famd5-3.fna.fbcdn.net/v/t42/data_video.mp4?token=abc&id=123");
+});
+
+test("Facebook Integration: Standard og:video meta tag extracts video URL and decodes &amp;", async () => {
     const fixtureHtml = `
         <!DOCTYPE html>
         <html>
             <head>
                 <meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&amp;sig=123" />
+                <meta property="og:title" content="A Great Facebook Reel" />
             </head>
         </html>
     `;
@@ -604,10 +628,250 @@ test("Facebook Integration: Safe HTML extraction works and decodes &amp; without
 
     assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&sig=123");
     assert.equal(result.type, "video");
+    assert.equal(result.title, "A Great Facebook Reel");
 
     const validated = validateExtractionResult(result, "facebook");
     assert.equal(validated.url, "https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&sig=123");
 });
+
+test("Facebook Integration: Reversed meta attributes (content before property) extracts video URL", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta content="https://video.xx.fbcdn.net/v/t42/reversed_meta.mp4?token=xyz" property="og:video" />
+                <title>Reversed Meta Video</title>
+            </head>
+        </html>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/reel/10153231379946729/", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/reversed_meta.mp4?token=xyz");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Reversed Meta Video");
+});
+
+test("Facebook Integration: Embedded playable_url extracted when meta tags are absent", async () => {
+    const fixtureHtml = `
+        <script>
+            requireLazy(["ScheduledServerJS"], function(s) {
+                s.handle({"define":[["ServerJSData",[],{"instances":[]},1]],"require":[["RelayPrefetchedStreamCache","next",[],["123",{"playable_url":"https:\\/\\/video.xx.fbcdn.net\\/v\\/t42\\/relay_stream.mp4?token=abc&amp;sig=def"}]]]});
+            });
+        </script>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/relay_stream.mp4?token=abc&sig=def");
+    assert.equal(result.type, "video");
+});
+
+test("Facebook Integration: playable_url_quality_hd is preferred over playable_url", async () => {
+    const fixtureHtml = `
+        <script>
+            var videoData = {
+                "playable_url": "https:\\/\\/video.xx.fbcdn.net\\/v\\/t42\\/sd_quality.mp4",
+                "playable_url_quality_hd": "https:\\/\\/video.xx.fbcdn.net\\/v\\/t42\\/hd_quality.mp4"
+            };
+        </script>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/hd_quality.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Facebook Integration: Priority order enforces data-video-url over og:video and playable_url", async () => {
+    const fixtureHtml = `
+        <meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/og_video.mp4" />
+        <div data-video-url="https://video.xx.fbcdn.net/v/t42/priority_data_video.mp4"></div>
+        <script>var x = {"playable_url": "https://video.xx.fbcdn.net/v/t42/playable.mp4"};</script>
+    `;
+
+    const result = await extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/priority_data_video.mp4");
+});
+
+test("Facebook Integration: Video post with only og:image does NOT return image as video", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:image" content="https://scontent.xx.fbcdn.net/v/t15/preview.jpg" />
+                <title>Some Facebook Post</title>
+            </head>
+            <body>No video here</body>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: async () => fixtureHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Candidate URL from unapproved domain is rejected by validateMediaUrl", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:video" content="https://malicious-external-domain.com/video.mp4" />
+            </head>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: async () => fixtureHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNAPPROVED_MEDIA_DOMAIN");
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Login barrier shell classified as PLATFORM_CHALLENGE (403)", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head><title>Facebook – log in or sign up</title></head>
+            <body>
+                <a href="/login_via/app">Log in</a>
+            </body>
+        </html>
+    `;
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: async () => fixtureHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+            assert.equal(err.statusCode, 403);
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Upstream HTTP 401/403/429 classified as PLATFORM_CHALLENGE", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    for (const code of [401, 403, 429]) {
+        const mockFetchHtml = async () => {
+            throw new SecurityHTTPError(`Upstream HTTP ${code}`, code);
+        };
+
+        await assert.rejects(
+            () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+                fetchHtml: mockFetchHtml
+            }),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+                assert.equal(err.statusCode, 403);
+                return true;
+            }
+        );
+    }
+});
+
+test("Facebook Integration: Genuinely missing page (HTTP 404) returns MEDIA_NOT_FOUND (404)", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Upstream HTTP 404", 404);
+    };
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=99999999999999", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            assert.equal(err.statusCode, 404);
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Adapter passes mobile User-Agent and Sec-Fetch navigation headers to fetchHtml", async () => {
+    let capturedOptions = null;
+    const mockFetchHtml = async (url, domains, maxBytes, options) => {
+        capturedOptions = options;
+        return `<html><head><meta property="og:video" content="https://video.xx.fbcdn.net/v/t42/test.mp4" /></head></html>`;
+    };
+
+    const result = await extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.ok(capturedOptions);
+    assert.ok(capturedOptions.headers);
+    assert.match(capturedOptions.headers["User-Agent"], /Android.*Chrome.*Mobile/);
+    assert.equal(capturedOptions.headers["Sec-Fetch-Dest"], "document");
+    assert.equal(capturedOptions.headers["Sec-Fetch-Mode"], "navigate");
+    assert.equal(capturedOptions.headers["Sec-Fetch-Site"], "none");
+    assert.equal(capturedOptions.headers["Sec-Fetch-User"], "?1");
+    assert.equal(result.url, "https://video.xx.fbcdn.net/v/t42/test.mp4");
+});
+
+test("Facebook Integration: Security violation halts immediately without swallowing", async () => {
+    const mockFetchHtml = () => {
+        throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
+    };
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "SSRF_PROHIBITED");
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Upstream timeout maps to PROVIDER_TIMEOUT", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const mockFetchHtml = async () => {
+        const err = new SecurityHTTPError("Request timed out", 504);
+        err.code = "TIMEOUT";
+        throw err;
+    };
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: mockFetchHtml,
+            timeoutMs: 5000
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            return true;
+        }
+    );
+});
+
 
 // ==================== HTML ENTITY DECODING TESTS ====================
 
