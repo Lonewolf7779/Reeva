@@ -536,32 +536,19 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
     }
 });
 
-// ================== SECURE MEDIA STREAMING ENDPOINT ==================
-app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
-    const { mediaId } = req.params;
-    const { download } = req.query;
-
-    if (!mediaId || !/^[a-zA-Z0-9_\-]{8,64}$/.test(mediaId)) {
-        return res.status(400).json({
-            error: {
-                code: "INVALID_MEDIA_ID",
-                message: "Invalid media reference."
-            },
-            requestId: req.id
-        });
-    }
-
-    const mediaEntry = defaultRegistry.getMedia(mediaId);
-    if (!mediaEntry) {
-        return res.status(404).json({
-            error: {
-                code: "MEDIA_NOT_FOUND",
-                message: "The requested media link has expired or does not exist. Please extract again."
-            },
-            requestId: req.id
-        });
-    }
-
+// ================== AUTHORITATIVE SECURE MEDIA STREAMING ==================
+/**
+ * Authoritative handler for securely streaming a registered media entry.
+ * Enforces:
+ * 1. Approved media domain verification
+ * 2. DNS/IP SSRF protection via safe socket lookup
+ * 3. Controlled redirects (max 3, domain validated)
+ * 4. Overall & connection timeouts (AbortController)
+ * 5. Content-Type validation against approved media MIME types
+ * 6. Hard response size limit via StreamMeter
+ * 7. Client disconnect handling
+ */
+async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
     let fetchHandle;
 
     try {
@@ -605,7 +592,6 @@ app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter,
         }
 
         // Set safe response headers
-        const isDownload = download === "1";
         const fileExt = mediaEntry.type === "image" ? "jpg" : "mp4";
         const disposition = isDownload
             ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
@@ -666,47 +652,96 @@ app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter,
             res.destroy();
         }
     }
+}
+
+// ================== SECURE MEDIA STREAMING ENDPOINT ==================
+app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    const { mediaId } = req.params;
+    const isDownload = req.query.download === "1";
+
+    if (!mediaId || !/^[a-zA-Z0-9_\-]{8,64}$/.test(mediaId)) {
+        return res.status(400).json({
+            error: {
+                code: "INVALID_MEDIA_ID",
+                message: "Invalid media reference."
+            },
+            requestId: req.id
+        });
+    }
+
+    const mediaEntry = defaultRegistry.getMedia(mediaId);
+    if (!mediaEntry) {
+        return res.status(404).json({
+            error: {
+                code: "MEDIA_NOT_FOUND",
+                message: "The requested media link has expired or does not exist. Please extract again."
+            },
+            requestId: req.id
+        });
+    }
+
+    return streamRegisteredMedia(req, res, mediaEntry, isDownload);
 });
 
 // ================== COMPATIBILITY PROXY ENDPOINT ==================
-// Accepts only validated Reeva-generated media IDs or registered media URLs.
-// Arbitrary URLs are strictly rejected to prevent SSRF.
+// Accepts only existing validated Reeva-generated media IDs or registered media URLs.
+// Never creates new registry entries from arbitrary user-provided URLs.
 app.get("/api/proxy", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
-    const { id, url } = req.query;
+    const { id, url, download } = req.query;
+    const isDownload = download === "1";
 
-    // 1. If opaque ID is supplied
+    // 1. If opaque ID is supplied, resolve existing registry entry
     if (id) {
-        req.params.mediaId = id;
-        return app._router.handle(req, res);
-    }
-
-    // 2. If URL is supplied, verify if it was registered
-    if (url) {
-        const found = defaultRegistry.findByUpstreamUrl(url);
-        if (found) {
-            req.params.mediaId = found.id;
-            return app._router.handle(req, res);
-        }
-
-        // If URL is not in registry, validate against approved media CDN
-        try {
-            validateMediaUrl(url);
-            const registered = defaultRegistry.registerMedia({
-                upstreamUrl: url,
-                platform: "media",
-                type: "video"
-            });
-            req.params.mediaId = registered.id;
-            return app._router.handle(req, res);
-        } catch {
-            return res.status(403).json({
+        if (typeof id !== "string" || !/^[a-zA-Z0-9_\-]{8,64}$/.test(id)) {
+            return res.status(400).json({
                 error: {
-                    code: "ARBITRARY_PROXY_FORBIDDEN",
-                    message: "Arbitrary URL proxying is forbidden. Only verified Reeva media streams are permitted."
+                    code: "INVALID_MEDIA_ID",
+                    message: "Invalid media reference."
                 },
                 requestId: req.id
             });
         }
+
+        const mediaEntry = defaultRegistry.getMedia(id);
+        if (!mediaEntry) {
+            return res.status(404).json({
+                error: {
+                    code: "MEDIA_NOT_FOUND",
+                    message: "The requested media link has expired or does not exist. Please extract again."
+                },
+                requestId: req.id
+            });
+        }
+
+        return streamRegisteredMedia(req, res, mediaEntry, isDownload);
+    }
+
+    // 2. If URL is supplied, ONLY permit if it corresponds to an ALREADY-REGISTERED media entry.
+    // Never allow a user to register an arbitrary upstream URL directly via /api/proxy.
+    if (url) {
+        if (typeof url !== "string") {
+            return res.status(400).json({
+                error: {
+                    code: "INVALID_URL",
+                    message: "Invalid URL parameter."
+                },
+                requestId: req.id
+            });
+        }
+
+        const existingEntry = defaultRegistry.findByUpstreamUrl(url.trim());
+        if (existingEntry) {
+            return streamRegisteredMedia(req, res, existingEntry, isDownload);
+        }
+
+        // Unregistered URL: reject strictly with 403 ARBITRARY_PROXY_FORBIDDEN
+        return res.status(403).json({
+            error: {
+                code: "ARBITRARY_PROXY_FORBIDDEN",
+                message: "Arbitrary URL proxying is forbidden. Only verified Reeva media streams are permitted."
+            },
+            requestId: req.id
+        });
     }
 
     return res.status(400).json({

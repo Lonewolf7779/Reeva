@@ -83,22 +83,87 @@ test("Security Headers: Helmet CSP and protections are properly configured", asy
     }
 });
 
-test("Arbitrary Proxy Elimination: /api/proxy strictly rejects arbitrary URLs", async () => {
+test("Proxy Routing (Test A): /api/proxy?id=<opaque-id> resolves existing entry without router manipulation", async () => {
+    const { defaultRegistry } = require("../lib/media-registry.cjs");
     const server = http.createServer(app);
     await new Promise(r => server.listen(0, "127.0.0.1", r));
 
     try {
-        const arbitraryUrls = [
-            "https://attacker.com/evil.mp4",
+        // Register a media entry directly
+        const testMedia = defaultRegistry.registerMedia({
+            upstreamUrl: "https://scontent.cdninstagram.com/v/t50/mock_video.mp4",
+            platform: "instagram",
+            type: "video"
+        });
+
+        // 1. Valid existing ID should resolve cleanly (will attempt secure streaming, not fail with routing/param error)
+        const proxyRes = await makeRequest(server, `/api/proxy?id=${testMedia.id}`);
+        // Upstream fetch will fail gracefully with 502 UPSTREAM_FETCH_FAILED or STREAM_ERROR since mock URL isn't live,
+        // but crucially: it MUST NOT be 400, 404, or crash Express routing
+        assert.notEqual(proxyRes.status, 400);
+        assert.notEqual(proxyRes.status, 404);
+        assert.ok(proxyRes.status === 502 || proxyRes.status === 200, "Should invoke secure media streaming logic");
+
+        // 2. Non-existent ID returns 404
+        const missingRes = await makeRequest(server, "/api/proxy?id=med_00000000000000000000000000000000");
+        assert.equal(missingRes.status, 404);
+        assert.equal(missingRes.json.error.code, "MEDIA_NOT_FOUND");
+
+        // 3. Malformed ID returns 400
+        const badIdRes = await makeRequest(server, "/api/proxy?id=!invalid-id!");
+        assert.equal(badIdRes.status, 400);
+        assert.equal(badIdRes.json.error.code, "INVALID_MEDIA_ID");
+    } finally {
+        server.close();
+    }
+});
+
+test("Proxy Security (Test B): /api/proxy?url=<approved-cdn> cannot register arbitrary new media entries", async () => {
+    const { defaultRegistry } = require("../lib/media-registry.cjs");
+    const server = http.createServer(app);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+
+    try {
+        const approvedCdnUrl = "https://scontent.cdninstagram.com/arbitrary_user_injected_url.mp4";
+
+        // Confirm URL is not currently registered
+        assert.equal(defaultRegistry.findByUpstreamUrl(approvedCdnUrl), null);
+
+        // Attempt to pass arbitrary URL belonging to approved CDN
+        const res = await makeRequest(server, `/api/proxy?url=${encodeURIComponent(approvedCdnUrl)}`);
+
+        // Must reject with 403 ARBITRARY_PROXY_FORBIDDEN
+        assert.equal(res.status, 403);
+        assert.equal(res.json.error.code, "ARBITRARY_PROXY_FORBIDDEN");
+
+        // Confirm it was NOT registered in the media registry
+        assert.equal(defaultRegistry.findByUpstreamUrl(approvedCdnUrl), null);
+    } finally {
+        server.close();
+    }
+});
+
+test("Proxy SSRF Defense (Test C): /api/proxy?url= strictly blocks SSRF/internal targets", async () => {
+    const { defaultRegistry } = require("../lib/media-registry.cjs");
+    const server = http.createServer(app);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+
+    try {
+        const ssrfUrls = [
+            "http://127.0.0.1/",
+            "https://127.0.0.1/",
             "http://127.0.0.1:3000/secret",
+            "https://169.254.169.254/",
             "http://169.254.169.254/latest/meta-data/",
-            "https://evil-instagram.com/reel.mp4"
+            "https://localhost/",
+            "https://attacker.com/evil.mp4"
         ];
 
-        for (const url of arbitraryUrls) {
+        for (const url of ssrfUrls) {
             const res = await makeRequest(server, `/api/proxy?url=${encodeURIComponent(url)}`);
-            assert.equal(res.status, 403, `Expected 403 Forbidden for arbitrary proxy URL ${url}`);
+            assert.equal(res.status, 403, `Expected 403 Forbidden for proxy URL ${url}`);
             assert.equal(res.json.error.code, "ARBITRARY_PROXY_FORBIDDEN");
+            assert.equal(defaultRegistry.findByUpstreamUrl(url), null);
         }
     } finally {
         server.close();

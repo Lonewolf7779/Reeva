@@ -103,3 +103,99 @@ test("Cache Security: Bounded cache enforces maxEntries and evicts LRU entries",
 
     cache.destroy();
 });
+
+test("Resource Limit (Test D): HTML stream reader terminates when Content-Length is absent", async () => {
+    const { Readable } = require("stream");
+    const { readStreamWithLimit } = require("../lib/http-client.cjs");
+
+    const limitBytes = 2048; // 2 KB test threshold
+    let abortCalled = false;
+    let streamDestroyed = false;
+
+    // Create a chunked stream with no Content-Length that generates 5 KB of data
+    const chunkCount = 5;
+    const chunkSize = 1024;
+    let chunksSent = 0;
+
+    const stream = new Readable({
+        read() {
+            if (chunksSent < chunkCount) {
+                chunksSent++;
+                this.push(Buffer.alloc(chunkSize, "x"));
+            } else {
+                this.push(null);
+            }
+        },
+        destroy(err, cb) {
+            streamDestroyed = true;
+            cb(err);
+        }
+    });
+
+    const abortFn = () => {
+        abortCalled = true;
+        stream.destroy();
+    };
+
+    let caughtError = null;
+    try {
+        await readStreamWithLimit(stream, limitBytes, abortFn);
+    } catch (err) {
+        caughtError = err;
+    }
+
+    assert.ok(caughtError, "Expected stream reader to reject when size exceeds limit");
+    assert.ok(caughtError instanceof ResponseTooLargeError);
+    assert.equal(abortCalled, true, "Upstream abort must be called when limit is exceeded");
+    assert.equal(streamDestroyed, true, "Stream must be destroyed");
+    assert.ok(chunksSent < chunkCount, "Stream consumption must stop immediately");
+});
+
+test("Resource Limit (Test E): HTML stream reader terminates when Content-Length lies", async () => {
+    const { Readable } = require("stream");
+    const { readStreamWithLimit } = require("../lib/http-client.cjs");
+
+    const limitBytes = 1024; // 1 KB
+    let abortCalled = false;
+
+    // Simulate an upstream response where header claimed 50 bytes, but stream produces 3000 bytes
+    let producedBytes = 0;
+    const stream = new Readable({
+        read() {
+            if (producedBytes < 3000) {
+                producedBytes += 600;
+                this.push(Buffer.alloc(600, "a"));
+            } else {
+                this.push(null);
+            }
+        }
+    });
+
+    const abortFn = () => {
+        abortCalled = true;
+        stream.destroy();
+    };
+
+    let caughtError = null;
+    try {
+        await readStreamWithLimit(stream, limitBytes, abortFn);
+    } catch (err) {
+        caughtError = err;
+    }
+
+    assert.ok(caughtError, "Stream reader must reject even when Content-Length claimed safe size");
+    assert.ok(caughtError instanceof ResponseTooLargeError);
+    assert.equal(abortCalled, true, "Upstream abort must be called");
+});
+
+test("Resource Limit: HTML stream reader succeeds for responses within limit", async () => {
+    const { Readable } = require("stream");
+    const { readStreamWithLimit } = require("../lib/http-client.cjs");
+
+    const safeHtml = "<html><head><title>Reeva Safe Page</title></head><body>OK</body></html>";
+    const stream = Readable.from([Buffer.from(safeHtml)]);
+
+    const result = await readStreamWithLimit(stream, 10000, () => {});
+    assert.equal(result, safeHtml);
+});
+
