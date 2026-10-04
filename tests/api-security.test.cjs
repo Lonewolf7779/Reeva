@@ -238,6 +238,46 @@ test("API Download Endpoint: Validates parameters, platforms, and domains", asyn
     }
 });
 
+test("API Download Endpoint: Preserves SecurityHTTPError status codes cleanly", async () => {
+    const { createExtractionOrchestrator } = require("../lib/extraction/index.cjs");
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const express = require("express");
+    const testApp = express();
+
+    const orchestrator = createExtractionOrchestrator({
+        adapters: {
+            instagram: async () => {
+                throw new SecurityHTTPError("Destination is not permitted.", 400, "DISALLOWED_DESTINATION");
+            }
+        }
+    });
+
+    testApp.get("/api/download/:platform", async (req, res) => {
+        try {
+            await orchestrator.extractMedia({
+                platform: req.params.platform,
+                sourceUrl: req.query.url,
+                requestId: "req_test"
+            });
+        } catch (err) {
+            const statusCode = err.statusCode || 502;
+            const errorCode = err.code || "EXTRACTION_FAILED";
+            return res.status(statusCode).json({ error: { code: errorCode, message: err.message } });
+        }
+    });
+
+    const server = http.createServer(testApp);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+
+    try {
+        const res = await makeRequest(server, "/api/download/instagram?url=https://www.instagram.com/reel/valid123/");
+        assert.equal(res.status, 400);
+        assert.equal(res.json.error.code, "DISALLOWED_DESTINATION");
+    } finally {
+        server.close();
+    }
+});
+
 test("Media Registry: Automatically unlinks localFilePath on expiration and deletion", () => {
     const fs = require("fs");
     const os = require("os");

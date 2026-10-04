@@ -184,8 +184,8 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
         let statusCode = 502;
         let errorCode = "EXTRACTION_FAILED";
 
-        if (err instanceof ValidationError || err instanceof SSRFError) {
-            statusCode = 400;
+        if (err instanceof ValidationError || err instanceof SSRFError || err instanceof SecurityHTTPError) {
+            statusCode = err.statusCode || 400;
             errorCode = err.code || "VALIDATION_FAILED";
         } else if (err instanceof ExtractionError) {
             statusCode = err.statusCode || 502;

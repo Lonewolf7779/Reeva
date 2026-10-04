@@ -1228,6 +1228,178 @@ test("Pinterest Integration: Direct HTML extraction works with deterministic fix
     assert.equal(validated.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
 });
 
+test("Pinterest Integration: Upstream HTTP 401/403/429 classified as PLATFORM_CHALLENGE", async () => {
+    for (const code of [401, 403, 429]) {
+        const mockFetchHtml = async () => {
+            throw new SecurityHTTPError(`Upstream HTTP ${code}`, code);
+        };
+
+        await assert.rejects(
+            () => extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
+                fetchHtml: mockFetchHtml
+            }),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+                assert.equal(err.statusCode, 403);
+                return true;
+            }
+        );
+    }
+});
+
+test("Pinterest Integration: Upstream HTTP 404 mapped to MEDIA_NOT_FOUND", async () => {
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Page not found (404)", 404);
+    };
+
+    await assert.rejects(
+        () => extractPinterest("https://www.pinterest.com/pin/999999999999999999/", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            assert.equal(err.statusCode, 404);
+            return true;
+        }
+    );
+});
+
+test("Pinterest Integration: Upstream timeout mapped to PROVIDER_TIMEOUT", async () => {
+    const mockFetchHtml = async () => {
+        const err = new SecurityHTTPError("Request timed out", 504);
+        err.code = "TIMEOUT";
+        throw err;
+    };
+
+    await assert.rejects(
+        () => extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
+            fetchHtml: mockFetchHtml,
+            timeoutMs: 3000
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            return true;
+        }
+    );
+});
+
+test("Pinterest Integration: Security violation halts immediately without swallowing", async () => {
+    const mockFetchHtml = () => {
+        throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
+    };
+
+    await assert.rejects(
+        () => extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "SSRF_PROHIBITED");
+            return true;
+        }
+    );
+});
+
+test("Pinterest Integration: Extracts post title from og:title and decodes HTML entities", async () => {
+    const fixtureHtml = `
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <meta property="og:title" content="Vintage Art &amp; Design &quot;Inspiration&quot;" />
+                <meta property="og:image" content="https://i.pinimg.com/736x/vintage.jpg" />
+            </head>
+        </html>
+    `;
+
+    const result = await extractPinterest("https://www.pinterest.com/pin/123456789012345678/", {
+        fetchHtml: async () => fixtureHtml
+    });
+
+    assert.equal(result.title, 'Vintage Art & Design "Inspiration"');
+    assert.equal(result.url, "https://i.pinimg.com/736x/vintage.jpg");
+    assert.equal(result.type, "image");
+});
+
+test("Pinterest Integration: Resolves pin.it short links and handles redirect errors", async () => {
+    // 1. Successful short link resolution
+    const mockFetch = async (url) => {
+        return {
+            finalUrl: "https://www.pinterest.com/pin/123456789012345678/",
+            clearTimeout: () => {}
+        };
+    };
+
+    const mockFetchHtml = async (url) => {
+        assert.ok(url.includes("pinterest.com/pin/"));
+        return `<meta property="og:image" content="https://i.pinimg.com/736x/resolved.jpg" />`;
+    };
+
+    const result = await extractPinterest("https://pin.it/abc1234", {
+        fetch: mockFetch,
+        fetchHtml: mockFetchHtml
+    });
+    assert.equal(result.url, "https://i.pinimg.com/736x/resolved.jpg");
+});
+
+test("Extraction Orchestrator: Ephemeral localFilePath artifacts are excluded from process cache", async () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+
+    const tempFile = path.join(os.tmpdir(), `reeva_cache_test_${Date.now()}.mp4`);
+    fs.writeFileSync(tempFile, "temp-video-bytes");
+
+    try {
+        const testCache = new BoundedCache(10, 60000);
+        let runCount = 0;
+
+        const orchestrator = createExtractionOrchestrator({
+            cache: testCache,
+            adapters: {
+                youtube: async () => {
+                    runCount++;
+                    return {
+                        url: "https://rr1---sn-abc.googlevideo.com/videoplayback",
+                        localFilePath: tempFile,
+                        type: "video",
+                        title: "YouTube Video",
+                        mode: "VIDEO_AND_AUDIO"
+                    };
+                }
+            }
+        });
+
+        // First extraction
+        const res1 = await orchestrator.extractMedia({
+            platform: "youtube",
+            sourceUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            mode: "VIDEO_AND_AUDIO",
+            requestId: "req_cache_1"
+        });
+        assert.equal(res1.success, true);
+        assert.equal(runCount, 1);
+
+        // Confirm result with localFilePath was NOT cached in testCache
+        const cacheKey = "https://www.youtube.com/watch?v=dQw4w9WgXcQ#mode=VIDEO_AND_AUDIO";
+        assert.equal(testCache.get(cacheKey), undefined, "localFilePath artifacts must not be stored in URL extraction cache");
+
+        // Second extraction must execute fresh adapter, not return stale/shared file path
+        const res2 = await orchestrator.extractMedia({
+            platform: "youtube",
+            sourceUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            mode: "VIDEO_AND_AUDIO",
+            requestId: "req_cache_2"
+        });
+        assert.equal(res2.success, true);
+        assert.equal(runCount, 2, "Second extraction must run fresh adapter to produce an independent file artifact");
+    } finally {
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+    }
+});
+
 test("Facebook Integration: HTML with data-video-url extracts video URL", async () => {
     const fixtureHtml = `
         <!DOCTYPE html>
