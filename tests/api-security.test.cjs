@@ -228,7 +228,96 @@ test("API Download Endpoint: Validates parameters, platforms, and domains", asyn
         const nonExistentRes = await makeRequest(server, "/api/media/med_00112233445566778899aabbccddeeff");
         assert.equal(nonExistentRes.status, 404);
         assert.equal(nonExistentRes.json.error.code, "MEDIA_NOT_FOUND");
+
+        // Invalid YouTube mode
+        const invalidModeRes = await makeRequest(server, "/api/download/youtube?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&mode=INVALID_MODE");
+        assert.equal(invalidModeRes.status, 502);
+        assert.equal(invalidModeRes.json.error.code, "UNSUPPORTED_MEDIA");
     } finally {
         server.close();
+    }
+});
+
+test("Media Registry: Automatically unlinks localFilePath on expiration and deletion", () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+
+    const tempDir = path.join(os.tmpdir(), "reeva_test_" + Date.now());
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const dummyFile = path.join(tempDir, "test_file.mp4");
+    fs.writeFileSync(dummyFile, "dummy video data");
+    assert.ok(fs.existsSync(dummyFile));
+
+    const registry = new MediaRegistry(10, 50); // 50ms TTL
+    const entry = registry.registerMedia({
+        upstreamUrl: "https://googlevideo.com/test",
+        platform: "youtube",
+        type: "video",
+        localFilePath: dummyFile,
+        mode: "VIDEO_AND_AUDIO"
+    });
+
+    assert.equal(entry.id.startsWith("med_"), true);
+
+    // Explicit deletion cleans up file
+    registry.deleteMedia(entry.id);
+    assert.equal(fs.existsSync(dummyFile), false, "deleteMedia must unlink the local file");
+
+    // Clean up temp dir
+    try { fs.rmdirSync(tempDir); } catch (_) {}
+});
+
+test("API Media Streaming: Serves local file artifact with security boundary checks", async () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+    const { defaultRegistry } = require("../lib/media-registry.cjs");
+    const { REEVA_TEMP_DIR } = require("../lib/extraction/adapters/youtube.cjs");
+
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+
+    const testFile = path.join(REEVA_TEMP_DIR, `reeva_mux_test_${Date.now()}.mp4`);
+    fs.writeFileSync(testFile, "test-media-stream-content-12345");
+
+    const server = http.createServer(app);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+
+    try {
+        const registered = defaultRegistry.registerMedia({
+            upstreamUrl: "https://rr1---sn-abc.googlevideo.com/videoplayback",
+            platform: "youtube",
+            type: "video",
+            localFilePath: testFile,
+            mode: "VIDEO_AND_AUDIO"
+        });
+
+        // 1. Valid streaming request
+        const res = await makeRequest(server, `/api/media/${registered.id}`);
+        assert.equal(res.status, 200);
+        assert.equal(res.headers["content-type"], "video/mp4");
+        assert.equal(res.body, "test-media-stream-content-12345");
+
+        // 2. Traversal test: registering a file outside REEVA_TEMP_DIR must be blocked with 403 ACCESS_DENIED
+        const outsideFile = path.join(os.tmpdir(), "outside_test.mp4");
+        fs.writeFileSync(outsideFile, "outside content");
+        const outsideEntry = defaultRegistry.registerMedia({
+            upstreamUrl: "https://rr1---sn-abc.googlevideo.com/videoplayback",
+            platform: "youtube",
+            type: "video",
+            localFilePath: outsideFile
+        });
+
+        const blockedRes = await makeRequest(server, `/api/media/${outsideEntry.id}`);
+        assert.equal(blockedRes.status, 403);
+        assert.equal(blockedRes.json.error.code, "ACCESS_DENIED");
+
+        try { fs.unlinkSync(outsideFile); } catch (_) {}
+    } finally {
+        server.close();
+        try { fs.unlinkSync(testFile); } catch (_) {}
     }
 });

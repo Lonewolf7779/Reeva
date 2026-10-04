@@ -792,55 +792,255 @@ test("Twitter Integration: Regression test ensuring twitter-downloader is comple
     );
 });
 
-// --- YOUTUBE ---
-test("YouTube Integration: Adapter calls getInfo() and selects valid mp4 format", async () => {
-    let getInfoCalledUrl = null;
-
-    const mockYtdl = {
-        getInfo: async (url) => {
-            getInfoCalledUrl = url;
-            return {
-                videoDetails: { title: "YouTube Video Title" },
-                formats: [
-                    { container: "webm", hasVideo: true, hasAudio: false, url: "https://rr1---sn-abc.googlevideo.com/webm_video" },
-                    { container: "mp4", hasVideo: true, hasAudio: true, url: "https://rr1---sn-abc.googlevideo.com/mp4_combined" }
-                ]
-            };
-        }
+// --- YOUTUBE (yt-dlp adapter) ---
+test("YouTube Integration: VIDEO_ONLY mode extracts direct stream URL and enforces security flags", async () => {
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        return {
+            stdout: JSON.stringify({
+                url: "https://rr1---sn-abc.googlevideo.com/videoplayback?id=123",
+                fulltitle: "Video Only Test Title",
+                vcodec: "av01",
+                acodec: "none"
+            }),
+            stderr: "",
+            exitCode: 0
+        };
     };
 
     const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
-        provider: mockYtdl
+        mode: "VIDEO_ONLY",
+        commandRunner: mockRunner
     });
 
-    assert.equal(getInfoCalledUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-    assert.equal(result.url, "https://rr1---sn-abc.googlevideo.com/mp4_combined");
+    assert.ok(captured);
+    assert.ok(captured.args.includes("--no-playlist"));
+    assert.ok(captured.args.includes("--no-call-home"));
+    assert.ok(captured.args.includes("--ignore-config"));
+    assert.ok(captured.args.some(a => a.includes("bv*")));
+
+    assert.equal(result.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?id=123");
     assert.equal(result.type, "video");
-    assert.equal(result.title, "YouTube Video Title");
+    assert.equal(result.title, "Video Only Test Title");
+    assert.equal(result.mode, "VIDEO_ONLY");
 
     const validated = validateExtractionResult(result, "youtube");
-    assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/mp4_combined");
+    assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?id=123");
+    assert.equal(validated.type, "video");
+    assert.equal(validated.mode, "VIDEO_ONLY");
 });
 
-test("YouTube Integration: Rejects when no downloadable mp4 format is available", async () => {
-    const mockYtdl = {
-        getInfo: async () => ({
-            videoDetails: { title: "Audio Only" },
-            formats: [
-                { container: "m4a", hasVideo: false, hasAudio: true, mimeType: "audio/mp4", url: "https://googlevideo.com/audio" }
-            ]
-        })
+test("YouTube Integration: AUDIO_ONLY mode extracts direct audio stream URL and sets type to audio", async () => {
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        return {
+            stdout: JSON.stringify({
+                url: "https://rr2---sn-xyz.googlevideo.com/videoplayback?id=456",
+                fulltitle: "Audio Only Test Title",
+                vcodec: "none",
+                acodec: "mp4a.40.2"
+            }),
+            stderr: "",
+            exitCode: 0
+        };
     };
 
+    const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "AUDIO_ONLY",
+        commandRunner: mockRunner
+    });
+
+    assert.ok(captured);
+    assert.ok(captured.args.includes("ba[ext=m4a]/ba"));
+    assert.equal(result.url, "https://rr2---sn-xyz.googlevideo.com/videoplayback?id=456");
+    assert.equal(result.type, "audio");
+    assert.equal(result.title, "Audio Only Test Title");
+    assert.equal(result.mode, "AUDIO_ONLY");
+
+    const validated = validateExtractionResult(result, "youtube");
+    assert.equal(validated.url, "https://rr2---sn-xyz.googlevideo.com/videoplayback?id=456");
+    assert.equal(validated.type, "audio");
+    assert.equal(validated.mode, "AUDIO_ONLY");
+});
+
+test("YouTube Integration: VIDEO_AND_AUDIO mode merges to local file artifact and sets mode", async () => {
+    const fs = require("fs");
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        const oIndex = args.indexOf("-o");
+        assert.ok(oIndex !== -1);
+        const outPath = args[oIndex + 1];
+        fs.writeFileSync(outPath, "mock mp4 content");
+
+        return {
+            stdout: JSON.stringify({
+                fulltitle: "Merged Video Title",
+                requested_formats: [
+                    { url: "https://rr1---sn-abc.googlevideo.com/videoplayback?video=1" },
+                    { url: "https://rr1---sn-abc.googlevideo.com/videoplayback?audio=1" }
+                ],
+                _filename: outPath
+            }),
+            stderr: "",
+            exitCode: 0
+        };
+    };
+
+    const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_AND_AUDIO",
+        commandRunner: mockRunner
+    });
+
+    assert.ok(captured);
+    assert.ok(captured.args.includes("--merge-output-format"));
+    assert.equal(result.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?video=1");
+    assert.equal(result.type, "video");
+    assert.equal(result.mode, "VIDEO_AND_AUDIO");
+    assert.ok(result.localFilePath);
+    assert.ok(fs.existsSync(result.localFilePath));
+
+    const validated = validateExtractionResult(result, "youtube");
+    assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?video=1");
+    assert.equal(validated.localFilePath, result.localFilePath);
+    assert.equal(validated.mode, "VIDEO_AND_AUDIO");
+
+    try { fs.unlinkSync(result.localFilePath); } catch (_) {}
+});
+
+test("YouTube Integration: Defaults to VIDEO_AND_AUDIO when mode is omitted", async () => {
+    const fs = require("fs");
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        const oIndex = args.indexOf("-o");
+        const outPath = args[oIndex + 1];
+        fs.writeFileSync(outPath, "mock default mp4");
+
+        return {
+            stdout: JSON.stringify({
+                fulltitle: "Default Mode Video",
+                url: "https://rr3---sn-def.googlevideo.com/videoplayback?id=789",
+                _filename: outPath
+            }),
+            stderr: "",
+            exitCode: 0
+        };
+    };
+
+    const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        commandRunner: mockRunner
+    });
+
+    assert.equal(result.mode, "VIDEO_AND_AUDIO");
+    assert.ok(result.localFilePath);
+    try { fs.unlinkSync(result.localFilePath); } catch (_) {}
+});
+
+test("YouTube Integration: Rejects unsupported or invalid media mode", async () => {
     await assert.rejects(
         () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
-            provider: mockYtdl
+            mode: "INVALID_MODE"
         }),
         (err) => {
             assert.ok(err instanceof ExtractionError);
             assert.equal(err.code, EXTRACTION_ERROR_CODES.UNSUPPORTED_MEDIA);
             return true;
         }
+    );
+});
+
+test("YouTube Integration: Upstream timeout maps to PROVIDER_TIMEOUT", async () => {
+    const mockRunner = async () => {
+        throw new ExtractionError(EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT, "YouTube extraction timed out.");
+    };
+
+    await assert.rejects(
+        () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+            mode: "VIDEO_ONLY",
+            commandRunner: mockRunner
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Platform challenge / bot check maps to PLATFORM_CHALLENGE", async () => {
+    const mockRunner = async () => {
+        return {
+            stdout: "",
+            stderr: "ERROR: Sign in to confirm you're not a bot",
+            exitCode: 1
+        };
+    };
+
+    await assert.rejects(
+        () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+            mode: "VIDEO_ONLY",
+            commandRunner: mockRunner
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Private video maps to PRIVATE_CONTENT", async () => {
+    const mockRunner = async () => {
+        return {
+            stdout: "",
+            stderr: "ERROR: Private video. Sign in if you've been granted access to this video",
+            exitCode: 1
+        };
+    };
+
+    await assert.rejects(
+        () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+            mode: "VIDEO_ONLY",
+            commandRunner: mockRunner
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PRIVATE_CONTENT);
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Video unavailable maps to MEDIA_NOT_FOUND", async () => {
+    const mockRunner = async () => {
+        return {
+            stdout: "",
+            stderr: "ERROR: Video unavailable. This video has been removed",
+            exitCode: 1
+        };
+    };
+
+    await assert.rejects(
+        () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+            mode: "VIDEO_ONLY",
+            commandRunner: mockRunner
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Regression test ensuring @distube/ytdl-core is completely removed", () => {
+    assert.throws(
+        () => require.resolve("@distube/ytdl-core"),
+        { code: "MODULE_NOT_FOUND" },
+        "@distube/ytdl-core must not be installed or imported"
     );
 });
 
@@ -1332,8 +1532,8 @@ test("Timeout Test E: Late rejection on non-cancellable promise after timeout do
 test("Result Validator: Rejects unsupported media types", () => {
     assert.throws(
         () => validateExtractionResult({
-            url: "https://scontent.cdninstagram.com/audio.mp3",
-            type: "audio"
+            url: "https://scontent.cdninstagram.com/doc.pdf",
+            type: "pdf"
         }, "instagram"),
         (err) => {
             assert.ok(err instanceof ExtractionError);
@@ -1341,6 +1541,17 @@ test("Result Validator: Rejects unsupported media types", () => {
             return true;
         }
     );
+});
+
+test("Result Validator: Accepts audio media type", () => {
+    const validated = validateExtractionResult({
+        url: "https://rr1---sn-abc.googlevideo.com/audio.m4a",
+        type: "audio",
+        title: "Test Audio"
+    }, "youtube");
+
+    assert.equal(validated.type, "audio");
+    assert.equal(validated.platform, "youtube");
 });
 
 test("Result Validator: Truncates long titles to 200 chars", () => {

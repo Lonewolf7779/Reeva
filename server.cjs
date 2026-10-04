@@ -1,6 +1,8 @@
 // server.cjs — Reeva Hardened Multi-Platform Media Downloader Backend
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
@@ -25,6 +27,7 @@ const { defaultRegistry } = require("./lib/media-registry.cjs");
 const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
 const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
 const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
+const { REEVA_TEMP_DIR } = require("./lib/extraction/adapters/youtube.cjs");
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -152,17 +155,20 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
         const extraction = await extractMedia({
             platform: req.params.platform,
             sourceUrl: req.query.url,
+            mode: req.query.mode,
             requestId: req.id
         });
 
         const { media } = extraction;
 
-        // Register the validated upstream URL and generate an opaque media ID
+        // Register the validated upstream URL or local file and generate an opaque media ID
         const registered = defaultRegistry.registerMedia({
             upstreamUrl: media.url,
             platform: media.platform,
             type: media.type || "video",
-            title: media.title || "Media"
+            title: media.title || "Media",
+            localFilePath: media.localFilePath || null,
+            mode: media.mode || null
         });
 
         // Return opaque media references (fully matching existing frontend expectations)
@@ -209,12 +215,106 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
  * 7. Client disconnect handling
  */
 async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
+    const maxMediaSize = parseInt(process.env.MAX_MEDIA_SIZE_BYTES || String(DEFAULT_MAX_MEDIA_BYTES), 10);
+
+    // If entry is backed by a local merged media file (e.g., YouTube VIDEO_AND_AUDIO)
+    if (mediaEntry.localFilePath) {
+        try {
+            const resolvedTempDir = path.resolve(process.env.REEVA_TEMP_DIR || REEVA_TEMP_DIR);
+            const resolvedFilePath = path.resolve(mediaEntry.localFilePath);
+
+            // Anti-traversal check: file must strictly reside within REEVA_TEMP_DIR
+            if (!resolvedFilePath.startsWith(resolvedTempDir + path.sep)) {
+                return res.status(403).json({
+                    error: {
+                        code: "ACCESS_DENIED",
+                        message: "Access to the requested file is prohibited."
+                    },
+                    requestId: req.id
+                });
+            }
+
+            if (!fs.existsSync(resolvedFilePath)) {
+                return res.status(404).json({
+                    error: {
+                        code: "MEDIA_NOT_FOUND",
+                        message: "The requested media file has expired or does not exist."
+                    },
+                    requestId: req.id
+                });
+            }
+
+            const stat = fs.statSync(resolvedFilePath);
+            if (stat.size > maxMediaSize) {
+                return res.status(413).json({
+                    error: {
+                        code: "PAYLOAD_TOO_LARGE",
+                        message: "Media stream exceeded maximum permitted size."
+                    },
+                    requestId: req.id
+                });
+            }
+
+            const fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
+            const disposition = isDownload
+                ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
+                : "inline";
+            const contentType = mediaEntry.type === "audio" ? "audio/mp4" : "video/mp4";
+
+            res.setHeader("Content-Type", contentType);
+            res.setHeader("Content-Disposition", disposition);
+            res.setHeader("X-Content-Type-Options", "nosniff");
+            res.setHeader("Cache-Control", "private, no-transform, max-age=3600");
+            res.setHeader("Content-Length", stat.size);
+
+            const fileStream = fs.createReadStream(resolvedFilePath);
+            const meter = new StreamMeter(maxMediaSize, () => {
+                fileStream.destroy();
+            });
+
+            meter.on("error", () => {
+                fileStream.destroy();
+                if (!res.headersSent) {
+                    res.status(413).json({
+                        error: {
+                            code: "PAYLOAD_TOO_LARGE",
+                            message: "Media stream exceeded maximum permitted size."
+                        },
+                        requestId: req.id
+                    });
+                } else {
+                    res.destroy();
+                }
+            });
+
+            req.on("close", () => {
+                if (!res.writableEnded) {
+                    fileStream.destroy();
+                }
+            });
+
+            fileStream.pipe(meter).pipe(res);
+            return;
+        } catch (err) {
+            if (!res.headersSent) {
+                res.status(500).json({
+                    error: {
+                        code: "STREAM_ERROR",
+                        message: "Failed to stream local media file."
+                    },
+                    requestId: req.id
+                });
+            } else {
+                res.destroy();
+            }
+            return;
+        }
+    }
+
+    // Upstream streaming via secureFetch for remote media URLs
     let fetchHandle;
 
     try {
-        const maxMediaSize = parseInt(process.env.MAX_MEDIA_SIZE_BYTES || String(DEFAULT_MAX_MEDIA_BYTES), 10);
-
-        // Secure fetch with SSRF, redirect, and size controls
         fetchHandle = await secureFetch(mediaEntry.upstreamUrl, {
             allowedDomains: SUPPORTED_MEDIA_DOMAINS,
             maxSizeBytes: maxMediaSize,
@@ -237,7 +337,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             });
         }
 
-        const rawContentType = response.headers.get("content-type") || "video/mp4";
+        const rawContentType = response.headers.get("content-type") || (mediaEntry.type === "audio" ? "audio/mp4" : "video/mp4");
 
         // Validate upstream Content-Type
         if (!isPermittedMediaContentType(rawContentType)) {
@@ -252,7 +352,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         }
 
         // Set safe response headers
-        const fileExt = mediaEntry.type === "image" ? "jpg" : "mp4";
+        const fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
         const disposition = isDownload
             ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
             : "inline";
