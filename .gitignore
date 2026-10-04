@@ -43,3 +43,10 @@ public/js/generated/
 *.zip
 *.bak
 *.old
+
+# Media artifacts and temp directories
+reeva_media/
+*.mp4
+*.m4a
+*.webm
+

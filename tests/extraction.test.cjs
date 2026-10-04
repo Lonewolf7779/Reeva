@@ -1044,6 +1044,167 @@ test("YouTube Integration: Regression test ensuring @distube/ytdl-core is comple
     );
 });
 
+test("YouTube Integration: Production mode rejects execution when YT_DLP_PATH is missing", async () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origYtDlp = process.env.YT_DLP_PATH;
+
+    try {
+        process.env.NODE_ENV = "production";
+        delete process.env.YT_DLP_PATH;
+
+        await assert.rejects(
+            () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+                mode: "VIDEO_ONLY"
+            }),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.UPSTREAM_UNAVAILABLE);
+                assert.ok(err.message.includes("YT_DLP_PATH is required"));
+                return true;
+            }
+        );
+    } finally {
+        if (origNodeEnv !== undefined) {
+            process.env.NODE_ENV = origNodeEnv;
+        } else {
+            delete process.env.NODE_ENV;
+        }
+        if (origYtDlp !== undefined) {
+            process.env.YT_DLP_PATH = origYtDlp;
+        } else {
+            delete process.env.YT_DLP_PATH;
+        }
+    }
+});
+
+test("YouTube Integration: Rejects missing FFMPEG_PATH when VIDEO_AND_AUDIO is requested", async () => {
+    const origFfmpeg = process.env.FFMPEG_PATH;
+
+    try {
+        delete process.env.FFMPEG_PATH;
+        const mockRunner = async () => ({ stdout: "{}", stderr: "", exitCode: 0 });
+
+        await assert.rejects(
+            () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+                mode: "VIDEO_AND_AUDIO",
+                commandRunner: mockRunner
+            }),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.UPSTREAM_UNAVAILABLE);
+                assert.ok(err.message.includes("FFmpeg is not configured"));
+                return true;
+            }
+        );
+    } finally {
+        if (origFfmpeg !== undefined) {
+            process.env.FFMPEG_PATH = origFfmpeg;
+        } else {
+            delete process.env.FFMPEG_PATH;
+        }
+    }
+});
+
+test("YouTube Integration: Does NOT require imageio_ffmpeg or python when YT_DLP_PATH and FFMPEG_PATH are configured", async () => {
+    const path = require("path");
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        return {
+            stdout: JSON.stringify({
+                url: "https://rr1---sn-abc.googlevideo.com/videoplayback",
+                fulltitle: "Clean Env Title"
+            }),
+            stderr: "",
+            exitCode: 0
+        };
+    };
+
+    const standaloneYtDlp = "C:\\Standalone\\yt-dlp.exe";
+    const standaloneFfmpeg = "C:\\Standalone\\ffmpeg.exe";
+
+    const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_ONLY",
+        ytDlpPath: standaloneYtDlp,
+        ffmpegPath: standaloneFfmpeg,
+        commandRunner: mockRunner
+    });
+
+    assert.equal(captured.command, path.resolve(standaloneYtDlp));
+    assert.equal(captured.args[0], "-j");
+    assert.equal(result.title, "Clean Env Title");
+});
+
+test("YouTube Integration: Preserves YT_DLP_PATH containing spaces without whitespace splitting", async () => {
+    const path = require("path");
+    let captured = null;
+    const mockRunner = async ({ command, args }) => {
+        captured = { command, args };
+        return {
+            stdout: JSON.stringify({
+                url: "https://rr1---sn-abc.googlevideo.com/videoplayback",
+                fulltitle: "Path With Spaces Title"
+            }),
+            stderr: "",
+            exitCode: 0
+        };
+    };
+
+    const spacedPath = "C:\\Program Files\\Custom Reeva Tools\\yt-dlp.exe";
+
+    await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_ONLY",
+        ytDlpPath: spacedPath,
+        commandRunner: mockRunner
+    });
+
+    assert.equal(captured.command, path.resolve(spacedPath));
+    assert.equal(captured.args[0], "-j");
+});
+
+test("YouTube Integration: Bounded stdout terminates process when limit is exceeded", async () => {
+    const { defaultCommandRunner } = require("../lib/extraction/adapters/youtube.cjs");
+
+    await assert.rejects(
+        () => defaultCommandRunner({
+            command: "node",
+            args: ["-e", "process.stdout.write('X'.repeat(5000));"],
+            maxStdoutBytes: 1000
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.ok(err.message.includes("stdout exceeded maximum buffer limit"));
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Bounded stderr terminates process when limit is exceeded", async () => {
+    const { defaultCommandRunner } = require("../lib/extraction/adapters/youtube.cjs");
+
+    await assert.rejects(
+        () => defaultCommandRunner({
+            command: "node",
+            args: ["-e", "process.stderr.write('E'.repeat(5000));"],
+            maxStderrBytes: 1000
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.ok(err.message.includes("stderr exceeded maximum buffer limit"));
+            return true;
+        }
+    );
+});
+
+test("YouTube Integration: Error sanitization redacts signed URLs from error details", () => {
+    const { mapYtDlpError } = require("../lib/extraction/adapters/youtube.cjs");
+    const sensitiveStderr = "Error opening https://rr1---sn-abc.googlevideo.com/videoplayback?expire=123&sig=SECRET_TOKEN: 403 Forbidden";
+    const err = mapYtDlpError(new Error("Spawn error"), sensitiveStderr);
+
+    assert.ok(!err.details.originalError.includes("SECRET_TOKEN"));
+    assert.ok(err.details.originalError.includes("[REDACTED_URL]"));
+});
+
 // --- PINTEREST & FACEBOOK (REMOVED UNSAFE PACKAGES) ---
 test("Pinterest Integration: Direct HTML extraction works with deterministic fixture and decodes &amp;", async () => {
     const fixtureHtml = `
