@@ -259,4 +259,179 @@ test("Resource Limit: readStreamWithLimit handles errors emitted during/after de
     assert.equal(unhandledErrorOccurred, false, "No unhandled error event must occur");
 });
 
+test("Subprocess Security: defaultCommandRunner aborts on AbortSignal and terminates process", async () => {
+    const { defaultCommandRunner } = require("../lib/extraction/adapters/youtube.cjs");
+    const { ExtractionError } = require("../lib/extraction/types.cjs");
+
+    const controller = new AbortController();
+    const startTime = Date.now();
+
+    // Spawn a long-running node process (30s sleep)
+    const runnerPromise = defaultCommandRunner({
+        command: "node",
+        args: ["-e", "setTimeout(() => {}, 30000);"],
+        timeoutMs: 30000,
+        signal: controller.signal
+    });
+
+    // Abort after 50ms
+    setTimeout(() => {
+        controller.abort();
+    }, 50);
+
+    await assert.rejects(
+        () => runnerPromise,
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.ok(err.message.includes("cancelled by client"));
+            return true;
+        }
+    );
+
+    const elapsed = Date.now() - startTime;
+    assert.ok(elapsed < 2000, `Process must be terminated immediately upon abort (elapsed: ${elapsed}ms)`);
+});
+
+test("Disk Security: cleanStaleTempFiles unlinks old artifacts and preserves recent ones", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
+
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+
+    const oldFile = path.join(REEVA_TEMP_DIR, `reeva_mux_old_test_${Date.now()}.mp4`);
+    const recentFile = path.join(REEVA_TEMP_DIR, `reeva_mux_recent_test_${Date.now()}.mp4`);
+
+    fs.writeFileSync(oldFile, "old-content");
+    fs.writeFileSync(recentFile, "recent-content");
+
+    // Set mtime of oldFile to 1 hour ago
+    const oneHourAgo = (Date.now() - 3600 * 1000) / 1000;
+    fs.utimesSync(oldFile, oneHourAgo, oneHourAgo);
+
+    const removed = cleanStaleTempFiles(15 * 60 * 1000); // 15 min max age
+    assert.ok(removed >= 1, "At least 1 old file should be removed");
+    assert.equal(fs.existsSync(oldFile), false, "Old file must be deleted");
+    assert.equal(fs.existsSync(recentFile), true, "Recent file must be preserved");
+
+    // Clean up recent test file
+    try { fs.unlinkSync(recentFile); } catch (_) {}
+});
+
+test("Media Registry: Background sweep timer proactively deletes expired entries and unlinks local files", async () => {
+    const fs = require("fs");
+    const path = require("path");
+    const { MediaRegistry } = require("../lib/media-registry.cjs");
+    const { REEVA_TEMP_DIR } = require("../lib/extraction/adapters/youtube.cjs");
+
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+
+    // Registry with 50ms TTL
+    const registry = new MediaRegistry(10, 50);
+    const testFile = path.join(REEVA_TEMP_DIR, `test_reg_sweep_${Date.now()}.mp4`);
+    fs.writeFileSync(testFile, "test data");
+
+    const registered = registry.registerMedia({
+        upstreamUrl: "https://example.com/video.mp4",
+        platform: "youtube",
+        localFilePath: testFile
+    });
+
+    assert.ok(fs.existsSync(testFile), "File must exist after registration");
+    assert.equal(registry.size, 1);
+
+    // Wait 100ms for TTL to expire
+    await new Promise(r => setTimeout(r, 100));
+
+    // Run sweep
+    registry.sweepExpired();
+
+    assert.equal(registry.size, 0, "Expired entry must be swept");
+    assert.equal(fs.existsSync(testFile), false, "Local file must be unlinked on expiry sweep");
+
+    registry.destroy();
+});
+
+test("Extraction Orchestrator: In-flight deduplication coalesces concurrent identical requests", async () => {
+    const { createExtractionOrchestrator } = require("../lib/extraction/index.cjs");
+    const { BoundedCache } = require("../lib/cache.cjs");
+
+    let adapterCalls = 0;
+    const mockAdapter = async () => {
+        adapterCalls++;
+        await new Promise(r => setTimeout(r, 60));
+        return {
+            url: "https://video.twimg.com/coalesce_test.mp4",
+            type: "video",
+            title: "Coalesced Video"
+        };
+    };
+
+    const orchestrator = createExtractionOrchestrator({
+        cache: new BoundedCache(50, 60000),
+        adapters: {
+            twitter: mockAdapter
+        }
+    });
+
+    const p1 = orchestrator.extractMedia({ platform: "twitter", sourceUrl: "https://x.com/user/status/11223344", requestId: "r1" });
+    const p2 = orchestrator.extractMedia({ platform: "twitter", sourceUrl: "https://x.com/user/status/11223344", requestId: "r2" });
+    const p3 = orchestrator.extractMedia({ platform: "twitter", sourceUrl: "https://x.com/user/status/11223344", requestId: "r3" });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+    assert.equal(adapterCalls, 1, "Only 1 adapter execution must occur for concurrent identical requests");
+    assert.equal(r1.success, true);
+    assert.equal(r2.success, true);
+    assert.equal(r3.success, true);
+    assert.equal(r2.deduplicated, true);
+    assert.equal(r3.deduplicated, true);
+});
+
+test("Concurrency Limiter: Decoupled extraction and stream limiters prevent streaming starvation", () => {
+    const { createConcurrencyLimiter } = require("../lib/concurrency-limiter.cjs");
+
+    const extractionLimiter = createConcurrencyLimiter({ maxGlobal: 2, maxPerIp: 1 });
+    const streamLimiter = createConcurrencyLimiter({ maxGlobal: 5, maxPerIp: 2 });
+
+    const createMockRes = () => {
+        const listeners = {};
+        return {
+            statusCode: 200,
+            status: function(code) { this.statusCode = code; return this; },
+            json: function(payload) { this.body = payload; return this; },
+            on: function(event, fn) { listeners[event] = fn; },
+            emit: function(event) { if (listeners[event]) listeners[event](); }
+        };
+    };
+
+    // Saturate extraction limiter (2 active requests from IP1 and IP2)
+    const resExt1 = createMockRes();
+    const resExt2 = createMockRes();
+    extractionLimiter({ ip: "1.1.1.1" }, resExt1, () => {});
+    extractionLimiter({ ip: "2.2.2.2" }, resExt2, () => {});
+    assert.equal(extractionLimiter.getGlobalActive(), 2);
+
+    // 3rd extraction request must be rejected with 503
+    const resExt3 = createMockRes();
+    extractionLimiter({ ip: "3.3.3.3" }, resExt3, () => {});
+    assert.equal(resExt3.statusCode, 503);
+
+    // BUT streaming requests must NOT be starved because streamLimiter is decoupled!
+    const resStream1 = createMockRes();
+    let streamNextCalled = false;
+    streamLimiter({ ip: "3.3.3.3" }, resStream1, () => { streamNextCalled = true; });
+    assert.equal(streamNextCalled, true, "Streaming request must proceed even when extraction slots are full");
+    assert.equal(streamLimiter.getGlobalActive(), 1);
+
+    // Teardown
+    resExt1.emit("finish");
+    resExt2.emit("finish");
+    resStream1.emit("finish");
+});
+
 

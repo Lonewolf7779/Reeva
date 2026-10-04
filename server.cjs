@@ -27,7 +27,15 @@ const { defaultRegistry } = require("./lib/media-registry.cjs");
 const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
 const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
 const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
-const { REEVA_TEMP_DIR } = require("./lib/extraction/adapters/youtube.cjs");
+const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
+
+// Clean stale temporary media artifacts on server startup
+cleanStaleTempFiles();
+// Periodic sweep of stale temporary artifacts every 15 minutes
+const staleCleanupInterval = setInterval(() => cleanStaleTempFiles(), 15 * 60 * 1000);
+if (staleCleanupInterval && staleCleanupInterval.unref) {
+    staleCleanupInterval.unref();
+}
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -93,6 +101,7 @@ const generalLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_GENERAL_MAX || "100", 10),
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -107,6 +116,7 @@ const extractionLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_EXTRACTION_MAX || "15", 10),
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -120,6 +130,7 @@ const mediaStreamLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_MEDIA_MAX || "30", 10),
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -128,10 +139,16 @@ const mediaStreamLimiter = rateLimit({
     }
 });
 
-// Concurrency limiter for expensive extraction and streaming operations
+// Concurrency limiter for expensive extraction operations
 const extractionConcurrencyLimiter = createConcurrencyLimiter({
-    maxGlobal: parseInt(process.env.MAX_GLOBAL_CONCURRENCY || "50", 10),
-    maxPerIp: parseInt(process.env.MAX_IP_CONCURRENCY || "3", 10)
+    maxGlobal: parseInt(process.env.MAX_GLOBAL_EXTRACTION_CONCURRENCY || process.env.MAX_GLOBAL_CONCURRENCY || "30", 10),
+    maxPerIp: parseInt(process.env.MAX_IP_EXTRACTION_CONCURRENCY || process.env.MAX_IP_CONCURRENCY || "3", 10)
+});
+
+// Dedicated concurrency limiter for media streaming operations to prevent streaming from starving extraction
+const mediaStreamConcurrencyLimiter = createConcurrencyLimiter({
+    maxGlobal: parseInt(process.env.MAX_GLOBAL_STREAM_CONCURRENCY || "50", 10),
+    maxPerIp: parseInt(process.env.MAX_IP_STREAM_CONCURRENCY || "5", 10)
 });
 
 // ================== METHOD ENFORCEMENT ==================
@@ -151,12 +168,20 @@ app.use("/api", (req, res, next) => {
 
 // ================== MAIN EXTRACTION ENDPOINT ==================
 app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    const abortController = new AbortController();
+    req.on("close", () => {
+        if (!res.writableEnded) {
+            abortController.abort();
+        }
+    });
+
     try {
         const extraction = await extractMedia({
             platform: req.params.platform,
             sourceUrl: req.query.url,
             mode: req.query.mode,
-            requestId: req.id
+            requestId: req.id,
+            signal: abortController.signal
         });
 
         const { media } = extraction;
@@ -436,7 +461,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 }
 
 // ================== SECURE MEDIA STREAMING ENDPOINT ==================
-app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
+app.get("/api/media/:mediaId", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (req, res) => {
     const { mediaId } = req.params;
     const isDownload = req.query.download === "1";
 
@@ -467,7 +492,7 @@ app.get("/api/media/:mediaId", mediaStreamLimiter, extractionConcurrencyLimiter,
 // ================== COMPATIBILITY PROXY ENDPOINT ==================
 // Accepts only existing validated Reeva-generated media IDs or registered media URLs.
 // Never creates new registry entries from arbitrary user-provided URLs.
-app.get("/api/proxy", mediaStreamLimiter, extractionConcurrencyLimiter, async (req, res) => {
+app.get("/api/proxy", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (req, res) => {
     const { id, url, download } = req.query;
     const isDownload = download === "1";
 
