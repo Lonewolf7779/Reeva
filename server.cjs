@@ -312,6 +312,17 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
     }
 
     // Upstream streaming via secureFetch for remote media URLs
+    // Strictly prohibited for generic platform (must always be local artifacts)
+    if (mediaEntry.platform === "generic" || mediaEntry.platform === "more_sites") {
+        return res.status(403).json({
+            error: {
+                code: "ACCESS_DENIED",
+                message: "Remote streaming is not permitted for generic platform media."
+            },
+            requestId: req.id
+        });
+    }
+
     let fetchHandle;
 
     try {
