@@ -17,10 +17,11 @@ const {
 
 const { extractInstagram } = require("../lib/extraction/adapters/instagram.cjs");
 const { extractFacebook } = require("../lib/extraction/adapters/facebook.cjs");
-const { extractTwitter } = require("../lib/extraction/adapters/twitter.cjs");
+const { extractTwitter, extractTweetId, calculateSyndicationToken } = require("../lib/extraction/adapters/twitter.cjs");
 const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
 const { extractYouTube } = require("../lib/extraction/adapters/youtube.cjs");
 const { ValidationError } = require("../lib/url-validator.cjs");
+const { SecurityHTTPError } = require("../lib/http-client.cjs");
 const { BoundedCache } = require("../lib/cache.cjs");
 
 // ==================== CORE ORCHESTRATOR TESTS ====================
@@ -453,63 +454,341 @@ test("Instagram Integration: Upstream HTTP 401/403 classified as PLATFORM_CHALLE
     );
 });
 
-// --- TWITTER / X ---
-test("Twitter Integration: Adapter calls TwitterDL and maps media[].videos[].url", async () => {
-    let calledWithUrl = null;
+// --- TWITTER / X NATIVE SYNDICATION INTEGRATION TESTS ---
 
-    const mockTwitterModule = {
-        TwitterDL: async (url) => {
-            calledWithUrl = url;
-            return {
-                status: "success",
-                result: {
-                    description: "Interesting tweet video",
-                    media: [
-                        {
-                            type: "video",
-                            videos: [
-                                { bitrate: 256000, url: "https://video.twimg.com/low.mp4" },
-                                { bitrate: 832000, url: "https://video.twimg.com/high.mp4" }
-                            ]
-                        }
-                    ]
-                }
-            };
-        }
-    };
-
-    const result = await extractTwitter("https://twitter.com/user/status/1234567890123456789", {
-        provider: mockTwitterModule
-    });
-
-    assert.equal(calledWithUrl, "https://twitter.com/user/status/1234567890123456789");
-    // Must select the highest bitrate video variant
-    assert.equal(result.url, "https://video.twimg.com/high.mp4");
-    assert.equal(result.type, "video");
-    assert.equal(result.title, "Interesting tweet video");
-
-    const validated = validateExtractionResult(result, "twitter");
-    assert.equal(validated.url, "https://video.twimg.com/high.mp4");
+test("Twitter Integration: Tweet ID extracted correctly from twitter.com and x.com URLs", () => {
+    assert.equal(extractTweetId("https://twitter.com/user/status/1234567890123456789"), "1234567890123456789");
+    assert.equal(extractTweetId("https://x.com/NASA/status/1803506497839399197"), "1803506497839399197");
+    assert.equal(extractTweetId("https://x.com/user/status/123456789/video/1"), "123456789");
+    assert.equal(extractTweetId("https://twitter.com/i/web/status/9876543210"), "9876543210");
 });
 
-test("Twitter Integration: Handles upstream error responses properly", async () => {
-    const mockTwitterModule = {
-        TwitterDL: async () => ({
-            status: "error",
-            message: "Failed to get Guest Token. Authorization is invalid!"
-        })
+test("Twitter Integration: Invalid URL or non-status paths rejected by extractTweetId", () => {
+    assert.equal(extractTweetId("https://twitter.com/user/123456"), null);
+    assert.equal(extractTweetId("https://x.com/user/photos/123456"), null);
+    assert.equal(extractTweetId("https://x.com/user/status/notanumber"), null);
+    assert.equal(extractTweetId("https://twitter.com/"), null);
+    assert.equal(extractTweetId(""), null);
+});
+
+test("Twitter Integration: Calculates syndication token using mathematical formula", () => {
+    const token1 = calculateSyndicationToken("1585341984679469056");
+    assert.equal(token1, "3uchycv2wqc");
+
+    const token2 = calculateSyndicationToken("850007368138018817");
+    assert.equal(token2, "226dkgspmbx");
+});
+
+test("Twitter Integration: Successful video response selects highest bitrate MP4 and ignores HLS", async () => {
+    const mockTweetJson = {
+        text: "Entering Twitter HQ – let that sink in! https://t.co/D68z4K2wq7",
+        user: { name: "Elon Musk", screen_name: "elonmusk" },
+        mediaDetails: [
+            {
+                type: "video",
+                video_info: {
+                    variants: [
+                        { bitrate: 256000, content_type: "video/mp4", url: "https://video.twimg.com/example-low.mp4" },
+                        { bitrate: 10368000, content_type: "video/mp4", url: "https://video.twimg.com/example-high.mp4" },
+                        { content_type: "application/x-mpegURL", url: "https://video.twimg.com/example.m3u8" }
+                    ]
+                }
+            }
+        ]
+    };
+
+    let requestedUrl = null;
+    const mockFetchHtml = async (url) => {
+        requestedUrl = url;
+        return JSON.stringify(mockTweetJson);
+    };
+
+    const result = await extractTwitter("https://x.com/elonmusk/status/1585341984679469056", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.ok(requestedUrl.includes("cdn.syndication.twimg.com/tweet-result?id=1585341984679469056"));
+    assert.ok(requestedUrl.includes("token=3uchycv2wqc"));
+    assert.equal(result.url, "https://video.twimg.com/example-high.mp4");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Entering Twitter HQ – let that sink in!");
+
+    const validated = validateExtractionResult(result, "twitter");
+    assert.equal(validated.url, "https://video.twimg.com/example-high.mp4");
+    assert.equal(validated.type, "video");
+});
+
+test("Twitter Integration: Animated GIF with MP4 variant extracted as video", async () => {
+    const mockGifJson = {
+        text: "Cool animation",
+        user: { screen_name: "designer" },
+        mediaDetails: [
+            {
+                type: "animated_gif",
+                video_info: {
+                    variants: [
+                        { bitrate: 0, content_type: "video/mp4", url: "https://video.twimg.com/tweet_gif.mp4" }
+                    ]
+                }
+            }
+        ]
+    };
+
+    const result = await extractTwitter("https://twitter.com/designer/status/1122334455", {
+        fetchHtml: async () => JSON.stringify(mockGifJson)
+    });
+
+    assert.equal(result.url, "https://video.twimg.com/tweet_gif.mp4");
+    assert.equal(result.type, "video");
+    assert.equal(result.title, "Cool animation");
+});
+
+test("Twitter Integration: Photo extraction works when no video is present", async () => {
+    const mockPhotoJson = {
+        text: "Beautiful sunset photo",
+        user: { screen_name: "photographer" },
+        mediaDetails: [
+            {
+                type: "photo",
+                media_url_https: "https://pbs.twimg.com/media/sunset.jpg"
+            }
+        ]
+    };
+
+    const result = await extractTwitter("https://x.com/photographer/status/9988776655", {
+        fetchHtml: async () => JSON.stringify(mockPhotoJson)
+    });
+
+    assert.equal(result.url, "https://pbs.twimg.com/media/sunset.jpg");
+    assert.equal(result.type, "image");
+    assert.equal(result.title, "Beautiful sunset photo");
+
+    const validated = validateExtractionResult(result, "twitter");
+    assert.equal(validated.url, "https://pbs.twimg.com/media/sunset.jpg");
+    assert.equal(validated.type, "image");
+});
+
+test("Twitter Integration: Multiple media items prioritizes video over photos", async () => {
+    const mockMixedJson = {
+        text: "Post with photo and video",
+        user: { screen_name: "multimedia" },
+        mediaDetails: [
+            {
+                type: "photo",
+                media_url_https: "https://pbs.twimg.com/media/preview.jpg"
+            },
+            {
+                type: "video",
+                video_info: {
+                    variants: [
+                        { bitrate: 500000, content_type: "video/mp4", url: "https://video.twimg.com/actual_video.mp4" }
+                    ]
+                }
+            }
+        ]
+    };
+
+    const result = await extractTwitter("https://x.com/multimedia/status/1234567890", {
+        fetchHtml: async () => JSON.stringify(mockMixedJson)
+    });
+
+    assert.equal(result.url, "https://video.twimg.com/actual_video.mp4");
+    assert.equal(result.type, "video");
+});
+
+test("Twitter Integration: Unapproved media domain rejected by validateMediaUrl", async () => {
+    const mockMaliciousJson = {
+        text: "Exploit attempt",
+        mediaDetails: [
+            {
+                type: "video",
+                video_info: {
+                    variants: [
+                        { bitrate: 1000, content_type: "video/mp4", url: "https://malicious-external-cdn.com/bad.mp4" }
+                    ]
+                }
+            }
+        ]
     };
 
     await assert.rejects(
-        () => extractTwitter("https://twitter.com/user/status/1234567890123456789", {
-            provider: mockTwitterModule
+        () => extractTwitter("https://x.com/attacker/status/1234567890", {
+            fetchHtml: async () => JSON.stringify(mockMaliciousJson)
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNAPPROVED_MEDIA_DOMAIN");
+            return true;
+        }
+    );
+});
+
+test("Twitter Integration: HTTP/private/internal media URL rejected", async () => {
+    const mockInternalJson = {
+        text: "Internal exploit",
+        mediaDetails: [
+            {
+                type: "video",
+                video_info: {
+                    variants: [
+                        { bitrate: 1000, content_type: "video/mp4", url: "http://127.0.0.1:8080/internal.mp4" }
+                    ]
+                }
+            }
+        ]
+    };
+
+    await assert.rejects(
+        () => extractTwitter("https://x.com/attacker/status/1234567890", {
+            fetchHtml: async () => JSON.stringify(mockInternalJson)
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNSUPPORTED_PROTOCOL");
+            return true;
+        }
+    );
+});
+
+test("Twitter Integration: Tombstone response mapped to MEDIA_NOT_FOUND", async () => {
+    const mockTombstone = {
+        __typename: "TweetTombstone",
+        tombstone: true
+    };
+
+    await assert.rejects(
+        () => extractTwitter("https://x.com/user/status/1580661436132757506", {
+            fetchHtml: async () => JSON.stringify(mockTombstone)
         }),
         (err) => {
             assert.ok(err instanceof ExtractionError);
-            assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
-            assert.match(err.message, /Failed to get Guest Token/);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            assert.match(err.message, /deleted.*restricted/);
             return true;
         }
+    );
+});
+
+test("Twitter Integration: Empty mediaDetails and no photos mapped to MEDIA_NOT_FOUND", async () => {
+    const mockTextOnly = {
+        __typename: "Tweet",
+        text: "Just a text tweet without any media",
+        user: { screen_name: "author" },
+        mediaDetails: []
+    };
+
+    await assert.rejects(
+        () => extractTwitter("https://x.com/author/status/850007368138018817", {
+            fetchHtml: async () => JSON.stringify(mockTextOnly)
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.MEDIA_NOT_FOUND);
+            return true;
+        }
+    );
+});
+
+test("Twitter Integration: Controlled fallback to token=0 when primary calculated token returns 404", async () => {
+    const mockVideoJson = {
+        text: "Video from fallback token",
+        mediaDetails: [
+            {
+                type: "video",
+                video_info: {
+                    variants: [
+                        { bitrate: 1000000, content_type: "video/mp4", url: "https://video.twimg.com/fallback_video.mp4" }
+                    ]
+                }
+            }
+        ]
+    };
+
+    const requestedUrls = [];
+    const mockFetchHtml = async (url) => {
+        requestedUrls.push(url);
+        if (url.includes("token=0")) {
+            return JSON.stringify(mockVideoJson);
+        }
+        throw new SecurityHTTPError("Page not found (404)", 404);
+    };
+
+    const result = await extractTwitter("https://x.com/user/status/1585341984679469056", {
+        fetchHtml: mockFetchHtml
+    });
+
+    assert.equal(requestedUrls.length, 2);
+    assert.ok(requestedUrls[0].includes("token="));
+    assert.ok(requestedUrls[1].includes("token=0"));
+    assert.equal(result.url, "https://video.twimg.com/fallback_video.mp4");
+});
+
+test("Twitter Integration: Upstream HTTP 401/403/429 mapped to PLATFORM_CHALLENGE", async () => {
+    for (const code of [401, 403, 429]) {
+        const mockFetchHtml = async () => {
+            throw new SecurityHTTPError(`Blocked (${code})`, code);
+        };
+
+        await assert.rejects(
+            () => extractTwitter("https://x.com/user/status/1234567890", {
+                fetchHtml: mockFetchHtml
+            }),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+                assert.equal(err.statusCode, 403);
+                return true;
+            }
+        );
+    }
+});
+
+test("Twitter Integration: Upstream timeout mapped to PROVIDER_TIMEOUT", async () => {
+    const mockFetchHtml = async () => {
+        const err = new SecurityHTTPError("Timeout", 504);
+        err.code = "TIMEOUT";
+        throw err;
+    };
+
+    await assert.rejects(
+        () => extractTwitter("https://x.com/user/status/1234567890", {
+            fetchHtml: mockFetchHtml,
+            timeoutMs: 3000
+        }),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+            return true;
+        }
+    );
+});
+
+test("Twitter Integration: Security violation halts immediately without fallback to token=0", async () => {
+    let callCount = 0;
+    const mockFetchHtml = async () => {
+        callCount++;
+        throw new ValidationError("Destination resolves to prohibited IP", "SSRF_PROHIBITED");
+    };
+
+    await assert.rejects(
+        () => extractTwitter("https://x.com/user/status/1234567890", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "SSRF_PROHIBITED");
+            return true;
+        }
+    );
+
+    assert.equal(callCount, 1, "Must never invoke fallback on security policy violation");
+});
+
+test("Twitter Integration: Regression test ensuring twitter-downloader is completely removed", () => {
+    assert.throws(
+        () => require("twitter-downloader"),
+        { code: "MODULE_NOT_FOUND" },
+        "twitter-downloader must not be installed or imported"
     );
 });
 
