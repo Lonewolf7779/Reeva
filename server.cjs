@@ -315,13 +315,23 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
     let fetchHandle;
 
     try {
+        const platformReferers = {
+            instagram: "https://www.instagram.com/",
+            facebook: "https://www.facebook.com/",
+            twitter: "https://x.com/",
+            x: "https://x.com/",
+            pinterest: "https://www.pinterest.com/",
+            youtube: "https://www.youtube.com/"
+        };
+        const referer = platformReferers[mediaEntry.platform] || "https://www.instagram.com/";
+
         fetchHandle = await secureFetch(mediaEntry.upstreamUrl, {
             allowedDomains: SUPPORTED_MEDIA_DOMAINS,
             maxSizeBytes: maxMediaSize,
             maxRedirects: 3,
             timeoutMs: 30000,
             headers: {
-                "Referer": "https://www.instagram.com/"
+                "Referer": referer
             }
         });
 
