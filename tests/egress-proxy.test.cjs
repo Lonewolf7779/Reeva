@@ -20,6 +20,8 @@ const {
 } = require("../lib/extraction/egress-proxy.cjs");
 const { validateGenericSourceUrl, ValidationError } = require("../lib/url-validator.cjs");
 const { extractGeneric } = require("../lib/extraction/adapters/generic.cjs");
+const { ExtractionError } = require("../lib/extraction/types.cjs");
+const { defaultCommandRunner } = require("../lib/extraction/adapters/youtube.cjs");
 
 // Helper to send raw HTTP/CONNECT requests over a TCP socket
 function sendRawSocketRequest(port, rawRequest) {
@@ -333,6 +335,39 @@ test("Egress Redirects: Blocks redirect to IPv6 loopback", async () => {
     }
 });
 
+test("Egress Redirects: Blocks redirect to 192.168.x.x RFC1918 address", async () => {
+    const proxy = await createEgressProxy();
+    try {
+        const redirectedReq = "GET http://192.168.1.1:80/admin HTTP/1.1\r\nHost: 192.168.1.1\r\n\r\n";
+        const res = await sendRawSocketRequest(proxy.port, redirectedReq);
+        assert.ok(res.includes("403 Forbidden"));
+    } finally {
+        await proxy.close();
+    }
+});
+
+test("Egress Redirects: Blocks redirect to HTTPS 127.0.0.1 loopback via CONNECT", async () => {
+    const proxy = await createEgressProxy();
+    try {
+        const rawReq = "CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\n\r\n";
+        const res = await sendRawSocketRequest(proxy.port, rawReq);
+        assert.ok(res.includes("403 Forbidden"));
+    } finally {
+        await proxy.close();
+    }
+});
+
+test("Egress Redirects: Blocks redirect to HTTPS [::1] IPv6 loopback via CONNECT", async () => {
+    const proxy = await createEgressProxy();
+    try {
+        const rawReq = "CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n\r\n";
+        const res = await sendRawSocketRequest(proxy.port, rawReq);
+        assert.ok(res.includes("403 Forbidden"));
+    } finally {
+        await proxy.close();
+    }
+});
+
 // ==============================================================================
 // 6. PROCESS SECURITY & YT-DLP INTEGRATION
 // ==============================================================================
@@ -367,6 +402,7 @@ test("Process Security: Generic extraction passes --proxy flag pointing to loopb
     assert.ok(passedProxyUrl.startsWith("http://127.0.0.1:"), "Proxy must be bound to 127.0.0.1");
     assert.ok(capturedArgs.includes("--no-playlist"));
     assert.ok(capturedArgs.includes("--ignore-config"));
+    assert.ok(capturedArgs.includes("--no-plugin-dirs"));
 });
 
 test("Process Security: User cannot inject or override proxy configuration", async () => {
@@ -418,5 +454,73 @@ test("Resource Limits: Enforces max concurrent proxy connections cleanly", async
             try { s.destroy(); } catch (_) {}
         }
         await proxy.close();
+    }
+});
+
+// ==============================================================================
+// 8. CONFIGURATION & SUBPROCESS ENVIRONMENT SECURITY
+// ==============================================================================
+
+test("Configuration Security: Disabling egress proxy in production is strictly rejected", async () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origDisable = process.env.REEVA_DISABLE_EGRESS_PROXY;
+    process.env.NODE_ENV = "production";
+    process.env.REEVA_DISABLE_EGRESS_PROXY = "true";
+
+    try {
+        await assert.rejects(
+            () => extractGeneric("https://commons.wikimedia.org/wiki/File:Test.webm", {
+                commandRunner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("cannot be disabled in production")
+        );
+    } finally {
+        process.env.NODE_ENV = origNodeEnv;
+        if (origDisable !== undefined) {
+            process.env.REEVA_DISABLE_EGRESS_PROXY = origDisable;
+        } else {
+            delete process.env.REEVA_DISABLE_EGRESS_PROXY;
+        }
+    }
+});
+
+test("Configuration Security: Malformed REEVA_EGRESS_PROXY_URL is rejected", async () => {
+    const origProxyUrl = process.env.REEVA_EGRESS_PROXY_URL;
+    process.env.REEVA_EGRESS_PROXY_URL = "not-a-valid-url";
+
+    try {
+        await assert.rejects(
+            () => extractGeneric("https://commons.wikimedia.org/wiki/File:Test.webm", {
+                commandRunner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("REEVA_EGRESS_PROXY_URL is malformed")
+        );
+    } finally {
+        if (origProxyUrl !== undefined) {
+            process.env.REEVA_EGRESS_PROXY_URL = origProxyUrl;
+        } else {
+            delete process.env.REEVA_EGRESS_PROXY_URL;
+        }
+    }
+});
+
+test("Subprocess Security: defaultCommandRunner sanitizes proxy bypass environment variables", async () => {
+    // Set dirty proxy bypass environment variables
+    process.env.NO_PROXY = "127.0.0.1,localhost";
+    process.env.HTTP_PROXY = "http://attacker-controlled.net";
+
+    try {
+        // Run a lightweight command printing python environment to verify sanitization
+        const res = await defaultCommandRunner({
+            command: "python",
+            args: ["-c", "import os; print('NO_PROXY' in os.environ, 'HTTP_PROXY' in os.environ)"],
+            timeoutMs: 5000
+        });
+
+        assert.equal(res.exitCode, 0);
+        assert.ok(res.stdout.includes("False False"), `Expected False False, got: ${res.stdout}`);
+    } finally {
+        delete process.env.NO_PROXY;
+        delete process.env.HTTP_PROXY;
     }
 });
