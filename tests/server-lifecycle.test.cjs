@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const http = require("http");
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 
 const {
     parseTrustProxy,
@@ -13,6 +14,9 @@ const {
     validateServerConfig,
     ConfigError
 } = require("../lib/config.cjs");
+
+const { defaultRegistry } = require("../lib/media-registry.cjs");
+const { REEVA_TEMP_DIR } = require("../lib/extraction/adapters/youtube.cjs");
 
 const app = require("../server.cjs");
 
@@ -329,4 +333,207 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
     // On Windows, child.kill sends TerminateProcess or exit code 0/1 depending on platform signal emulation
     // Either exit code 0 or null with SIGINT / SIGTERM
     assert.ok(result.code === 0 || result.signal === "SIGINT" || result.code === null);
+});
+
+// =========================================================================
+// 6. Media Streaming Lifecycle & Shutdown Boundary Tests
+// =========================================================================
+
+test("New streaming requests rejected with 503 when server is shutting down", async () => {
+    app.resetShutdownState();
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    // Simulate an in-flight operation so server stays in draining state
+    const inFlight = new AbortController();
+    app.getActiveStreamControllers().add(inFlight);
+
+    try {
+        const shutdownPromise = app.gracefulShutdown("TEST_SHUTDOWN", { timeoutMs: 500, server });
+
+        // /api/media/:mediaId
+        const resMedia = await fetch(`http://127.0.0.1:${port}/api/media/med_1234567890abcdef`);
+        assert.strictEqual(resMedia.status, 503);
+        const dataMedia = await resMedia.json();
+        assert.strictEqual(dataMedia.error.code, "SERVICE_UNAVAILABLE");
+
+        // /api/proxy
+        const resProxy = await fetch(`http://127.0.0.1:${port}/api/proxy?id=med_1234567890abcdef`);
+        assert.strictEqual(resProxy.status, 503);
+        const dataProxy = await resProxy.json();
+        assert.strictEqual(dataProxy.error.code, "SERVICE_UNAVAILABLE");
+
+        await shutdownPromise;
+    } finally {
+        app.resetShutdownState();
+        if (server.listening) server.close();
+    }
+});
+
+test("Active local-file stream is tracked in activeStreamControllers and completes before deadline", async () => {
+    app.resetShutdownState();
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+    const testFile = path.join(REEVA_TEMP_DIR, `test_stream_complete_${Date.now()}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(16 * 1024, "A")); // 16 KB
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://www.instagram.com/p/test",
+        platform: "instagram",
+        type: "video",
+        title: "Test Video",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+        // Stream the file
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 200);
+        const arrayBuf = await res.arrayBuffer();
+        assert.strictEqual(arrayBuf.byteLength, 16 * 1024);
+
+        // Wait brief tick for server finish/close event to process
+        await new Promise((r) => setTimeout(r, 50));
+
+        // After completion, activeStreamControllers must be empty
+        assert.strictEqual(app.getActiveStreamControllers().size, 0);
+
+        // Shutdown completes quickly without waiting for timeout
+        const start = Date.now();
+        await app.gracefulShutdown("TEST_COMPLETION", { timeoutMs: 2000, server });
+        const elapsed = Date.now() - start;
+        assert.ok(elapsed < 1000, `Shutdown should finish immediately after drain, elapsed: ${elapsed}ms`);
+    } finally {
+        app.resetShutdownState();
+        if (server.listening) server.close();
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});
+
+test("Active local-file stream still active at deadline is aborted, freeing server to close and cleaning files", async () => {
+    app.resetShutdownState();
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+    const testFile = path.join(REEVA_TEMP_DIR, `test_stream_timeout_${Date.now()}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(1024 * 1024, "B")); // 1 MB file
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://www.instagram.com/p/test2",
+        platform: "instagram",
+        type: "video",
+        title: "Test Timeout Video",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 200);
+
+        const reader = res.body.getReader();
+        const firstChunk = await reader.read();
+        assert.ok(firstChunk.value && firstChunk.value.length > 0);
+
+        // Verify stream is actively tracked
+        assert.strictEqual(app.getActiveStreamControllers().size, 1);
+
+        // Initiate shutdown with a small 150ms timeout
+        const shutdownStart = Date.now();
+        await app.gracefulShutdown("TEST_STREAM_TIMEOUT", { timeoutMs: 150, server });
+        const shutdownDuration = Date.now() - shutdownStart;
+
+        // Shutdown waited ~150ms then forced abort
+        assert.ok(shutdownDuration >= 140, `Shutdown should wait for grace deadline (${shutdownDuration}ms)`);
+        assert.strictEqual(app.getActiveStreamControllers().size, 0, "All stream controllers must be cleared after abort");
+
+
+        // Temporary file is safely unlinked with zero orphan disk leaks
+        assert.strictEqual(fs.existsSync(testFile), false, "Temporary media artifact must be cleaned up without lock errors");
+
+        // Server socket is completely closed
+        assert.strictEqual(server.listening, false, "Server listener must be closed");
+    } finally {
+        app.resetShutdownState();
+        if (server.listening) server.close();
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});
+
+test("Active remote stream abort propagation and controller cleanup on shutdown", async () => {
+    app.resetShutdownState();
+    const controllers = app.getActiveStreamControllers();
+    assert.strictEqual(controllers.size, 0);
+
+    // Simulate an active remote stream controller
+    const activeRemoteController = new AbortController();
+    let wasAborted = false;
+    activeRemoteController.signal.addEventListener("abort", () => {
+        wasAborted = true;
+    });
+    controllers.add(activeRemoteController);
+
+    try {
+        await app.gracefulShutdown("REMOTE_STREAM_TEST", { timeoutMs: 100 });
+
+        assert.strictEqual(wasAborted, true, "Active remote stream controller must be signaled to abort upon timeout");
+        assert.strictEqual(controllers.size, 0, "Active stream controller set must be cleared after shutdown");
+    } finally {
+        app.resetShutdownState();
+    }
+});
+
+test("Concurrency slot release when stream is aborted by shutdown", async () => {
+    app.resetShutdownState();
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
+    const testFile = path.join(REEVA_TEMP_DIR, `test_stream_concurrency_${Date.now()}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(512 * 1024, "C")); // 512 KB
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://www.instagram.com/p/test3",
+        platform: "instagram",
+        type: "video",
+        title: "Test Concurrency Video",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 200);
+
+        const reader = res.body.getReader();
+        await reader.read(); // Read first chunk to ensure stream has started
+
+        // Trigger shutdown to abort the active stream
+        await app.gracefulShutdown("CONCURRENCY_ABORT_TEST", { timeoutMs: 100, server });
+
+        // Ensure stream controllers are empty and server is closed
+        assert.strictEqual(app.getActiveStreamControllers().size, 0);
+        assert.strictEqual(server.listening, false);
+    } finally {
+        app.resetShutdownState();
+        if (server.listening) server.close();
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
 });

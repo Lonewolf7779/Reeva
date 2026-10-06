@@ -48,6 +48,7 @@ let isShuttingDown = false;
 let activeServer = null;
 let shutdownPromise = null;
 const activeExtractionControllers = new Set();
+const activeStreamControllers = new Set();
 
 const app = express();
 
@@ -283,6 +284,51 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
  * 7. Client disconnect handling
  */
 async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
+    const abortController = new AbortController();
+    activeStreamControllers.add(abortController);
+
+    const cleanupController = () => {
+        activeStreamControllers.delete(abortController);
+    };
+    res.on("finish", cleanupController);
+    res.on("close", cleanupController);
+    res.on("error", cleanupController);
+
+    let activeStream = null;
+    let fetchHandle = null;
+
+    const onAbort = () => {
+        if (activeStream && typeof activeStream.destroy === "function") {
+            try { activeStream.destroy(); } catch (_) {}
+        }
+        if (fetchHandle && typeof fetchHandle.abort === "function") {
+            try { fetchHandle.abort(); } catch (_) {}
+        }
+        if (!res.destroyed) {
+            try { res.destroy(); } catch (_) {}
+        }
+    };
+
+    abortController.signal.addEventListener("abort", onAbort, { once: true });
+    res.on("finish", () => abortController.signal.removeEventListener("abort", onAbort));
+    res.on("close", () => abortController.signal.removeEventListener("abort", onAbort));
+
+    req.on("close", () => {
+        if (!res.writableEnded) {
+            abortController.abort();
+        }
+    });
+
     const maxMediaSize = serverConfig.maxMediaSizeBytes;
 
     // If entry is backed by a local merged media file (e.g., YouTube VIDEO_AND_AUDIO)
@@ -336,6 +382,8 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             res.setHeader("Content-Length", stat.size);
 
             const fileStream = fs.createReadStream(resolvedFilePath);
+            activeStream = fileStream;
+
             const meter = new StreamMeter(maxMediaSize, () => {
                 fileStream.destroy();
             });
@@ -352,12 +400,6 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
                     });
                 } else {
                     res.destroy();
-                }
-            });
-
-            req.on("close", () => {
-                if (!res.writableEnded) {
-                    fileStream.destroy();
                 }
             });
 
@@ -391,8 +433,6 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         });
     }
 
-    let fetchHandle;
-
     try {
         const platformReferers = {
             instagram: "https://www.instagram.com/",
@@ -413,6 +453,11 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
                 "Referer": referer
             }
         });
+
+        if (abortController.signal.aborted || res.destroyed) {
+            fetchHandle.abort();
+            return;
+        }
 
         const { response } = fetchHandle;
 
@@ -476,13 +521,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             }
         });
 
-        // Cancel upstream fetch if client disconnects
-        req.on("close", () => {
-            if (!res.writableEnded) {
-                fetchHandle.abort();
-            }
-        });
-
+        activeStream = response.body;
         response.body.pipe(meter).pipe(res);
 
     } catch (err) {
@@ -505,6 +544,16 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
 // ================== SECURE MEDIA STREAMING ENDPOINT ==================
 app.get("/api/media/:mediaId", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
     const { mediaId } = req.params;
     const isDownload = req.query.download === "1";
 
@@ -536,6 +585,16 @@ app.get("/api/media/:mediaId", mediaStreamLimiter, mediaStreamConcurrencyLimiter
 // Accepts only existing validated Reeva-generated media IDs or registered media URLs.
 // Never creates new registry entries from arbitrary user-provided URLs.
 app.get("/api/proxy", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
     const { id, url, download } = req.query;
     const isDownload = download === "1";
 
@@ -636,8 +695,8 @@ app.use((err, req, res, next) => {
  * 1. Idempotent (calling multiple times returns the same in-progress promise).
  * 2. Marks server as not ready (isShuttingDown = true, /ready returns 503).
  * 3. Closes listening socket so no new TCP connections are accepted.
- * 4. Waits up to shutdownTimeoutMs for active extractions to finish draining.
- * 5. If deadline expires, aborts all remaining active extraction controllers.
+ * 4. Waits up to shutdownTimeoutMs for active extractions AND active streams to finish draining.
+ * 5. If deadline expires, aborts all remaining active extraction and streaming controllers.
  * 6. Cleans up periodic background sweeps, temporary disk artifacts, and media registry.
  *
  * @param {string} [signal="SIGTERM"]
@@ -656,20 +715,22 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
     const serverToClose = options.server || activeServer;
 
     logger.info({
-        message: `Graceful shutdown initiated with signal ${signal}. Waiting up to ${timeoutMs}ms for ${activeExtractionControllers.size} in-flight extractions to complete.`
+        message: `Graceful shutdown initiated with signal ${signal}. Waiting up to ${timeoutMs}ms for ${activeExtractionControllers.size} in-flight extractions and ${activeStreamControllers.size} in-flight streams to complete.`
     });
 
     shutdownPromise = (async () => {
-        // 1. Wait for active extractions to drain or timeout
+        // 1. Wait for active extractions AND active streams to drain or timeout
         const startTime = Date.now();
-        while (activeExtractionControllers.size > 0 && (Date.now() - startTime) < timeoutMs) {
+        while ((activeExtractionControllers.size > 0 || activeStreamControllers.size > 0) && (Date.now() - startTime) < timeoutMs) {
             await new Promise((resolve) => setTimeout(resolve, 50));
         }
 
-        // 2. Force abort any remaining controllers after timeout
-        if (activeExtractionControllers.size > 0) {
+        // 2. Force abort any remaining extraction or streaming controllers after timeout
+        const lingeringExtractions = activeExtractionControllers.size;
+        const lingeringStreams = activeStreamControllers.size;
+        if (lingeringExtractions > 0 || lingeringStreams > 0) {
             logger.warn({
-                message: `Shutdown grace period expired (${timeoutMs}ms). Aborting ${activeExtractionControllers.size} active extractions.`
+                message: `Shutdown grace period expired (${timeoutMs}ms). Aborting ${lingeringExtractions} active extractions and ${lingeringStreams} active streams.`
             });
             for (const controller of activeExtractionControllers) {
                 try {
@@ -679,17 +740,43 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
                 }
             }
             activeExtractionControllers.clear();
+
+            for (const controller of activeStreamControllers) {
+                try {
+                    controller.abort();
+                } catch (_) {
+                    // Ignore already aborted
+                }
+            }
+            activeStreamControllers.clear();
         }
 
         // 3. Stop accepting new HTTP connections and close socket
         if (serverToClose && serverToClose.listening) {
+            // Close any idle keep-alive connections immediately
+            if (typeof serverToClose.closeIdleConnections === "function") {
+                serverToClose.closeIdleConnections();
+            }
+
             await new Promise((resolve) => {
-                serverToClose.close((err) => {
+                let forceCloseTimer = null;
+                const onClose = (err) => {
+                    if (forceCloseTimer) clearTimeout(forceCloseTimer);
                     if (err) {
                         logger.error({ message: `Error closing HTTP server: ${err.message}` });
                     }
                     resolve();
-                });
+                };
+
+                serverToClose.close(onClose);
+
+                // Ensure server.close() cannot hang indefinitely if a stubborn connection exists
+                forceCloseTimer = setTimeout(() => {
+                    if (typeof serverToClose.closeAllConnections === "function") {
+                        serverToClose.closeAllConnections();
+                    }
+                }, 1000);
+                if (forceCloseTimer.unref) forceCloseTimer.unref();
             });
         }
 
@@ -721,11 +808,13 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
 app.serverConfig = serverConfig;
 app.gracefulShutdown = gracefulShutdown;
 app.getActiveExtractionControllers = () => activeExtractionControllers;
+app.getActiveStreamControllers = () => activeStreamControllers;
 app.getIsShuttingDown = () => isShuttingDown;
 app.resetShutdownState = () => {
     isShuttingDown = false;
     shutdownPromise = null;
     activeExtractionControllers.clear();
+    activeStreamControllers.clear();
 };
 
 // ================== SERVER LIFECYCLE ==================

@@ -164,12 +164,12 @@ Reeva implements a production-grade lifecycle state machine for container orches
 3. **Graceful Shutdown (`SIGTERM` / `SIGINT`)**:
    - **Idempotent**: Multiple signals or shutdown invocations return the identical in-progress promise.
    - **Readiness Drop**: Marks the server unready (`/ready` returns 503).
-   - **Rejection of New Work**: Rejects new extraction requests with HTTP 503 (`SERVICE_UNAVAILABLE`).
-   - **In-Flight Tracking**: Active extraction requests are tracked with `AbortController` in a bounded Set.
-   - **Bounded Grace Period (`SHUTDOWN_TIMEOUT_MS`)**: Gives active extractions up to `SHUTDOWN_TIMEOUT_MS` (default: 10,000ms) to complete.
-   - **Forced Abort on Timeout**: If active requests exceed the grace deadline, active controllers are aborted, terminating subprocesses (yt-dlp) and upstream network streams.
-   - **Socket Closure**: Stops accepting new HTTP connections and closes server listener.
-   - **Disk Cleanup**: Sweeps temporary directories and destroys the media registry, leaving zero orphan files on disk.
+   - **Rejection of New Work**: Rejects new extraction requests (`/api/download/:platform`) and new streaming requests (`/api/media/:mediaId`, `/api/proxy`) with HTTP 503 (`SERVICE_UNAVAILABLE`).
+   - **Dual In-Flight Tracking**: Both active extraction operations and active media streaming operations (local-file reads and remote upstream streams) are tracked using `AbortController` in dedicated Sets.
+   - **Bounded Grace Period (`SHUTDOWN_TIMEOUT_MS`)**: Gives active extractions and streams up to `SHUTDOWN_TIMEOUT_MS` (default: 10,000ms) to complete draining. If in-flight work completes earlier, shutdown finishes immediately.
+   - **Forced Abort on Timeout**: If active extractions or streams exceed the grace deadline, lingering controllers are signaled to abort. This terminates extraction child processes (yt-dlp), destroys local file read streams, aborts upstream `fetch` requests, destroys client response sockets, and releases all acquired concurrency slots.
+   - **Socket Closure & Bound Guarantee**: Closes idle keep-alive connections via `closeIdleConnections()` and uses a safety timeout with `closeAllConnections()` so lingering client sockets can never keep `server.close()` blocked indefinitely.
+   - **Disk Cleanup**: Clears periodic sweep timers, wipes the media registry, and unlinks all temporary disk files without file-locking contention, leaving zero orphan files on disk.
    - Exits cleanly with code 0.
 
 ---
