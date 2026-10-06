@@ -85,9 +85,12 @@ Reeva protects itself against resource exhaustion and denial of service:
   - General routes: 100 requests per 15 minutes.
   - Extraction routes (`/api/download/:platform`): 15 requests per 1 minute.
   - Media streaming routes (`/api/media/:id`): 30 requests per 5 minutes.
-- **Concurrency Limiting**:
-  - Global concurrent extraction and streaming requests are capped (default: 50).
-  - Per-IP simultaneous operations are strictly bounded (default: 3). Slots are guaranteed to release upon stream closure or disconnect via `res.on('finish' / 'close' / 'error')`.
+- **Decoupled Concurrency Limiting**:
+  - Independent concurrency limiters protect extraction operations (CPU- and subprocess-bound) from media streaming operations (I/O-bound):
+    - Extraction pool: `MAX_GLOBAL_EXTRACTION_CONCURRENCY` (default: 30), `MAX_IP_EXTRACTION_CONCURRENCY` (default: 3).
+    - Streaming pool: `MAX_GLOBAL_STREAM_CONCURRENCY` (default: 50), `MAX_IP_STREAM_CONCURRENCY` (default: 5).
+  - Prevents slow client downloads from starving extraction operations or vice versa.
+  - Slots are guaranteed to release upon stream closure or client disconnect via `res.on('finish' / 'close' / 'error')`.
 - **Response Size Limits**:
   - Media streaming is capped at 250 MB (`MAX_MEDIA_SIZE_BYTES`).
   - Pre-flight `Content-Length` inspection rejects oversized files upfront.
@@ -127,6 +130,56 @@ Reeva enforces modern HTTP security headers:
 - `Referrer-Policy: strict-origin-when-cross-origin`: Minimizes referrer leakage.
 - `Strict-Transport-Security`: Enforced for HTTPS deployments.
 - `Permissions-Policy`: Restricts browser sensor and device access.
+
+---
+
+## Production Deployment Boundary & Trust Proxy (`TRUST_PROXY`)
+
+In production environments behind reverse proxies (e.g. NGINX, HAProxy, AWS ALB, Cloudflare, Traefik), Express must know which upstream hops are trusted to correctly determine `req.ip` for rate limiting and concurrency controls.
+
+Reeva enforces strict, fail-fast configuration validation at startup:
+- **Default (`false` / `0` / unset)**: Assumes direct Internet traffic. `X-Forwarded-*` headers are completely ignored. This prevents attackers from spoofing their IP to bypass per-IP rate limits and concurrency throttles.
+- **Hop Count (e.g., `TRUST_PROXY=1`, `TRUST_PROXY=2`)**: Recommended for single or multi-layer reverse proxies. Express trusts exactly the specified number of upstream hops, reading client IP from the appropriate position in `X-Forwarded-For`.
+- **Subnets & CIDRs (e.g., `'loopback'`, `'10.0.0.0/8'`)**: Express trusts requests originating only from the specified CIDR or trusted subnet ranges.
+- **High-Trust (`TRUST_PROXY=true`)**: Express trusts all upstream hops. **WARNING**: Only use this mode if the application server is in a private network or VPC where direct access from the public Internet is impossible.
+
+Invalid values fail fast on startup and prevent the server from binding.
+
+---
+
+## Server Lifecycle, Container Probes & Graceful Shutdown
+
+Reeva implements a production-grade lifecycle state machine for container orchestrators (Kubernetes, Nomad, Docker Swarm):
+
+1. **Liveness Probe (`GET /health`)**:
+   - Returns HTTP 200 JSON `{ "status": "ok", "timestamp": "..." }`.
+   - Fast, unthrottled, and mounted before rate limiters.
+   - Contains no environment variables, internal paths, or secrets.
+
+2. **Readiness Probe (`GET /ready`)**:
+   - Returns HTTP 200 JSON `{ "status": "ready" }` during normal operation.
+   - Returns HTTP 503 JSON `{ "status": "shutting_down" }` once graceful shutdown is initiated.
+   - Independent of extraction limiters, allowing container orchestrators to remove the instance from active service endpoints.
+
+3. **Graceful Shutdown (`SIGTERM` / `SIGINT`)**:
+   - **Idempotent**: Multiple signals or shutdown invocations return the identical in-progress promise.
+   - **Readiness Drop**: Marks the server unready (`/ready` returns 503).
+   - **Rejection of New Work**: Rejects new extraction requests with HTTP 503 (`SERVICE_UNAVAILABLE`).
+   - **In-Flight Tracking**: Active extraction requests are tracked with `AbortController` in a bounded Set.
+   - **Bounded Grace Period (`SHUTDOWN_TIMEOUT_MS`)**: Gives active extractions up to `SHUTDOWN_TIMEOUT_MS` (default: 10,000ms) to complete.
+   - **Forced Abort on Timeout**: If active requests exceed the grace deadline, active controllers are aborted, terminating subprocesses (yt-dlp) and upstream network streams.
+   - **Socket Closure**: Stops accepting new HTTP connections and closes server listener.
+   - **Disk Cleanup**: Sweeps temporary directories and destroys the media registry, leaving zero orphan files on disk.
+   - Exits cleanly with code 0.
+
+---
+
+## Multi-Instance Scaling & In-Memory Registry Constraints
+
+Reeva's media token registry (`defaultRegistry`) and merged video/audio files (`REEVA_TEMP_DIR`) are process-local:
+- When a client performs an extraction, the resulting opaque media ID (`med_...`) and any merged media files reside in that specific instance's memory and local disk.
+- In a horizontally scaled cluster (multiple container replicas), requests to `/api/media/:mediaId` or `/api/proxy` must be routed to the instance that performed the extraction.
+- **Architectural Requirement**: Multi-instance deployments require **sticky sessions** (session affinity based on client IP or cookie) at the load balancer / ingress layer, unless a distributed shared registry (e.g. Redis) and shared storage volume are implemented.
 
 ---
 

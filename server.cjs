@@ -37,16 +37,23 @@ if (staleCleanupInterval && staleCleanupInterval.unref) {
     staleCleanupInterval.unref();
 }
 
+const { validateServerConfig, ConfigError } = require("./lib/config.cjs");
+
+// Validate server configuration fail-fast on startup
+const serverConfig = validateServerConfig(process.env);
+const PORT = serverConfig.port;
+
+// Server lifecycle tracking state
+let isShuttingDown = false;
+let activeServer = null;
+let shutdownPromise = null;
+const activeExtractionControllers = new Set();
+
 const app = express();
-const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // ================== PRODUCTION CONFIGURATION ==================
-// Do not blindly set trust proxy to true without deliberate configuration
-if (process.env.TRUST_PROXY) {
-    app.set("trust proxy", process.env.TRUST_PROXY);
-} else {
-    app.set("trust proxy", false);
-}
+// Set strictly validated proxy trust setting (defaults to false)
+app.set("trust proxy", serverConfig.trustProxy);
 
 // Disable Express fingerprinting header
 app.disable("x-powered-by");
@@ -88,6 +95,28 @@ app.use((req, res, next) => {
 // Request correlation ID middleware
 app.use(requestIdMiddleware);
 
+// ================== LIVENESS & READINESS PROBES ==================
+// Mounted before rate limiters and static assets to ensure container orchestrator probes
+// are never throttled or blocked by general rate limiters.
+app.get("/health", (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get("/ready", (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            status: "shutting_down",
+            message: "Server is shutting down and not accepting new traffic."
+        });
+    }
+    return res.status(200).json({
+        status: "ready"
+    });
+});
+
 // Static assets
 app.use(express.static("public", {
     maxAge: "1d",
@@ -98,7 +127,7 @@ app.use(express.static("public", {
 // ================== RATE LIMITERS ==================
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_GENERAL_MAX || "100", 10),
+    max: serverConfig.rateLimitGeneralMax,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
@@ -113,7 +142,7 @@ app.use(generalLimiter);
 
 const extractionLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: parseInt(process.env.RATE_LIMIT_EXTRACTION_MAX || "15", 10),
+    max: serverConfig.rateLimitExtractionMax,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
@@ -127,7 +156,7 @@ const extractionLimiter = rateLimit({
 
 const mediaStreamLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, // 5 minutes
-    max: parseInt(process.env.RATE_LIMIT_MEDIA_MAX || "30", 10),
+    max: serverConfig.rateLimitMediaMax,
     standardHeaders: true,
     legacyHeaders: false,
     validate: { xForwardedForHeader: false },
@@ -141,14 +170,14 @@ const mediaStreamLimiter = rateLimit({
 
 // Concurrency limiter for expensive extraction operations
 const extractionConcurrencyLimiter = createConcurrencyLimiter({
-    maxGlobal: parseInt(process.env.MAX_GLOBAL_EXTRACTION_CONCURRENCY || process.env.MAX_GLOBAL_CONCURRENCY || "30", 10),
-    maxPerIp: parseInt(process.env.MAX_IP_EXTRACTION_CONCURRENCY || process.env.MAX_IP_CONCURRENCY || "3", 10)
+    maxGlobal: serverConfig.maxGlobalExtractionConcurrency,
+    maxPerIp: serverConfig.maxIpExtractionConcurrency
 });
 
 // Dedicated concurrency limiter for media streaming operations to prevent streaming from starving extraction
 const mediaStreamConcurrencyLimiter = createConcurrencyLimiter({
-    maxGlobal: parseInt(process.env.MAX_GLOBAL_STREAM_CONCURRENCY || "50", 10),
-    maxPerIp: parseInt(process.env.MAX_IP_STREAM_CONCURRENCY || "5", 10)
+    maxGlobal: serverConfig.maxGlobalStreamConcurrency,
+    maxPerIp: serverConfig.maxIpStreamConcurrency
 });
 
 // ================== METHOD ENFORCEMENT ==================
@@ -168,7 +197,19 @@ app.use("/api", (req, res, next) => {
 
 // ================== MAIN EXTRACTION ENDPOINT ==================
 app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
     const abortController = new AbortController();
+    activeExtractionControllers.add(abortController);
+
     req.on("close", () => {
         if (!res.writableEnded) {
             abortController.abort();
@@ -224,6 +265,8 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
             },
             requestId: req.id
         });
+    } finally {
+        activeExtractionControllers.delete(abortController);
     }
 });
 
@@ -240,7 +283,7 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
  * 7. Client disconnect handling
  */
 async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
-    const maxMediaSize = parseInt(process.env.MAX_MEDIA_SIZE_BYTES || String(DEFAULT_MAX_MEDIA_BYTES), 10);
+    const maxMediaSize = serverConfig.maxMediaSizeBytes;
 
     // If entry is backed by a local merged media file (e.g., YouTube VIDEO_AND_AUDIO)
     if (mediaEntry.localFilePath) {
@@ -587,13 +630,126 @@ app.use((err, req, res, next) => {
     });
 });
 
+// ================== GRACEFUL SHUTDOWN & LIFECYCLE ==================
+/**
+ * Gracefully shuts down the server:
+ * 1. Idempotent (calling multiple times returns the same in-progress promise).
+ * 2. Marks server as not ready (isShuttingDown = true, /ready returns 503).
+ * 3. Closes listening socket so no new TCP connections are accepted.
+ * 4. Waits up to shutdownTimeoutMs for active extractions to finish draining.
+ * 5. If deadline expires, aborts all remaining active extraction controllers.
+ * 6. Cleans up periodic background sweeps, temporary disk artifacts, and media registry.
+ *
+ * @param {string} [signal="SIGTERM"]
+ * @param {object} [options={}]
+ * @param {number} [options.timeoutMs]
+ * @param {import("http").Server} [options.server]
+ * @returns {Promise<void>}
+ */
+function gracefulShutdown(signal = "SIGTERM", options = {}) {
+    if (shutdownPromise) {
+        return shutdownPromise;
+    }
+
+    isShuttingDown = true;
+    const timeoutMs = options.timeoutMs || serverConfig.shutdownTimeoutMs;
+    const serverToClose = options.server || activeServer;
+
+    logger.info({
+        message: `Graceful shutdown initiated with signal ${signal}. Waiting up to ${timeoutMs}ms for ${activeExtractionControllers.size} in-flight extractions to complete.`
+    });
+
+    shutdownPromise = (async () => {
+        // 1. Wait for active extractions to drain or timeout
+        const startTime = Date.now();
+        while (activeExtractionControllers.size > 0 && (Date.now() - startTime) < timeoutMs) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        // 2. Force abort any remaining controllers after timeout
+        if (activeExtractionControllers.size > 0) {
+            logger.warn({
+                message: `Shutdown grace period expired (${timeoutMs}ms). Aborting ${activeExtractionControllers.size} active extractions.`
+            });
+            for (const controller of activeExtractionControllers) {
+                try {
+                    controller.abort();
+                } catch (_) {
+                    // Ignore already aborted
+                }
+            }
+            activeExtractionControllers.clear();
+        }
+
+        // 3. Stop accepting new HTTP connections and close socket
+        if (serverToClose && serverToClose.listening) {
+            await new Promise((resolve) => {
+                serverToClose.close((err) => {
+                    if (err) {
+                        logger.error({ message: `Error closing HTTP server: ${err.message}` });
+                    }
+                    resolve();
+                });
+            });
+        }
+
+        // 4. Clear periodic background sweeps
+        if (staleCleanupInterval) {
+            clearInterval(staleCleanupInterval);
+        }
+
+        // 5. Clean up temporary files and registry entries safely
+        try {
+            defaultRegistry.clear();
+        } catch (_) {}
+
+        try {
+            cleanStaleTempFiles();
+        } catch (err) {
+            logger.error({ message: `Error cleaning temporary files during shutdown: ${err.message}` });
+        }
+
+        logger.info({
+            message: `Graceful shutdown completed successfully.`
+        });
+    })();
+
+    return shutdownPromise;
+}
+
+// Attach lifecycle and diagnostic functions to app
+app.serverConfig = serverConfig;
+app.gracefulShutdown = gracefulShutdown;
+app.getActiveExtractionControllers = () => activeExtractionControllers;
+app.getIsShuttingDown = () => isShuttingDown;
+app.resetShutdownState = () => {
+    isShuttingDown = false;
+    shutdownPromise = null;
+    activeExtractionControllers.clear();
+};
+
 // ================== SERVER LIFECYCLE ==================
 if (require.main === module) {
-    app.listen(PORT, () => {
+    activeServer = app.listen(PORT, () => {
         logger.info({
             message: `Reeva backend is live on port ${PORT} [NODE_ENV=${process.env.NODE_ENV || "development"}]`
         });
     });
+
+    const handleSignal = (sig) => {
+        logger.info({ message: `Received ${sig}. Starting graceful shutdown...` });
+        gracefulShutdown(sig)
+            .then(() => {
+                process.exit(0);
+            })
+            .catch((err) => {
+                logger.error({ message: `Fatal error during shutdown: ${err.message}` });
+                process.exit(1);
+            });
+    };
+
+    process.on("SIGTERM", () => handleSignal("SIGTERM"));
+    process.on("SIGINT", () => handleSignal("SIGINT"));
 }
 
 module.exports = app;
