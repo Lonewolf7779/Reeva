@@ -113,11 +113,29 @@ Reeva protects itself against resource exhaustion and denial of service:
 
 ## Logging & Privacy
 
-- Full raw user URLs, signed CDN URLs with session tokens, cookies, and authorization headers are never logged.
-- URLs are redacted to origin and pathname before logging.
-- Structured logs record operational metadata: `requestId`, `platform`, `operation`, `status`, `durationMs`.
-- Every incoming request is assigned a unique `X-Request-Id` for correlation.
-- Technical error stack traces are hidden from public API responses; generic, actionable error messages with codes and request IDs are returned to users.
+Reeva implements privacy-preserving structured logging and error normalization designed to prevent sensitive data leakage and log injection:
+
+- **Redacted URLs & Parameters**:
+  - URLs passed via metadata or embedded in message strings are redacted to protocol, host, and pathname, appending `?[redacted]` when query parameters exist.
+  - Basic authentication credentials (`user:password`) and URI fragments (`#fragment`) are stripped prior to formatting.
+- **Log Injection & CRLF Prevention**:
+  - Formatted log lines are strictly single-line.
+  - Newlines (`\n`), carriage returns (`\r`), and tabs (`\t`) in messages are normalized to single spaces.
+  - Non-printable ASCII control characters (`\x00-\x1F`, `\x7F-\x9F`) are stripped.
+  - Message lengths are bounded (default: 256 characters) with truncation indicators.
+- **Bounded Error Code & Identifier Sanitization**:
+  - Structured fields (`code`, `platform`, `operation`, `status`) are strictly bounded and sanitized to approved alphanumeric characters, hyphens, and underscores.
+  - Non-scalar objects passed as error codes or messages default to safe fallbacks (`UNKNOWN_ERROR`, `[object]`) rather than arbitrary serialization.
+- **Key Whitelisting**:
+  - The structured log formatter inspects only an explicit whitelist of supported operational keys (`requestId`, `platform`, `operation`, `status`, `code`, `durationMs`, `clientIp`, `url`, `message`). Unrecognized metadata properties, complex objects, and cyclic structures are omitted.
+- **Request Correlation**:
+  - Inbound `X-Request-Id` headers are validated against `/^[a-zA-Z0-9_\-]{8,64}$/`. Valid IDs are preserved; absent or non-conforming values are replaced with freshly generated `req_<hex>` identifiers.
+- **Media Stream Observability**:
+  - Media streaming operations emit structured lifecycle events (`operation=stream`, `status=start|success|error`, `durationMs`).
+  - Terminal stream errors classify client disconnects (`CLIENT_DISCONNECTED`), server aborts (`STREAM_ABORTED`), and policy rejections without logging media IDs, upstream CDN URLs, query parameters, or response payloads.
+- **Error Response Normalization**:
+  - Public API responses return sanitized error codes, human-readable user messages, and request correlation IDs.
+  - Internal technical stack traces, local filesystem paths, subprocess invocation details, provider credentials, and raw upstream response bodies are suppressed from HTTP error responses.
 
 ---
 

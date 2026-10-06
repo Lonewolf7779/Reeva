@@ -294,15 +294,67 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         });
     }
 
+    const streamStartTime = Date.now();
+    const platform = mediaEntry && mediaEntry.platform ? mediaEntry.platform : undefined;
+
+    // Operation start logging
+    logger.info({
+        requestId: req.id,
+        platform,
+        operation: "stream",
+        status: "start"
+    });
+
+    let streamLogged = false;
+    const logStreamTerminal = (status, code) => {
+        if (streamLogged) return;
+        streamLogged = true;
+        const durationMs = Date.now() - streamStartTime;
+        if (status === "success") {
+            logger.info({
+                requestId: req.id,
+                platform,
+                operation: "stream",
+                status: "success",
+                durationMs
+            });
+        } else {
+            logger.error({
+                requestId: req.id,
+                platform,
+                operation: "stream",
+                status: "error",
+                code: code || "STREAM_ERROR",
+                durationMs
+            });
+        }
+    };
+
     const abortController = new AbortController();
     activeStreamControllers.add(abortController);
 
     const cleanupController = () => {
         activeStreamControllers.delete(abortController);
     };
-    res.on("finish", cleanupController);
-    res.on("close", cleanupController);
-    res.on("error", cleanupController);
+    res.on("finish", () => {
+        cleanupController();
+        if (res.statusCode >= 200 && res.statusCode < 400) {
+            logStreamTerminal("success");
+        } else {
+            logStreamTerminal("error", `HTTP_${res.statusCode}`);
+        }
+    });
+    res.on("close", () => {
+        cleanupController();
+        if (!res.writableEnded) {
+            const abortCode = abortController.signal.aborted ? "STREAM_ABORTED" : "CLIENT_DISCONNECTED";
+            logStreamTerminal("error", abortCode);
+        }
+    });
+    res.on("error", () => {
+        cleanupController();
+        logStreamTerminal("error", "STREAM_ERROR");
+    });
 
     let activeStream = null;
     let fetchHandle = null;
@@ -339,6 +391,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             // Anti-traversal check: file must strictly reside within REEVA_TEMP_DIR
             if (!resolvedFilePath.startsWith(resolvedTempDir + path.sep)) {
+                logStreamTerminal("error", "ACCESS_DENIED");
                 return res.status(403).json({
                     error: {
                         code: "ACCESS_DENIED",
@@ -349,6 +402,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             }
 
             if (!fs.existsSync(resolvedFilePath)) {
+                logStreamTerminal("error", "MEDIA_NOT_FOUND");
                 return res.status(404).json({
                     error: {
                         code: "MEDIA_NOT_FOUND",
@@ -360,6 +414,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             const stat = fs.statSync(resolvedFilePath);
             if (stat.size > maxMediaSize) {
+                logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
                 return res.status(413).json({
                     error: {
                         code: "PAYLOAD_TOO_LARGE",
@@ -390,6 +445,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             meter.on("error", () => {
                 fileStream.destroy();
+                logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
                 if (!res.headersSent) {
                     res.status(413).json({
                         error: {
@@ -406,6 +462,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             fileStream.pipe(meter).pipe(res);
             return;
         } catch (err) {
+            logStreamTerminal("error", "STREAM_ERROR");
             if (!res.headersSent) {
                 res.status(500).json({
                     error: {
@@ -424,6 +481,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
     // Upstream streaming via secureFetch for remote media URLs
     // Strictly prohibited for generic platform (must always be local artifacts)
     if (mediaEntry.platform === "generic" || mediaEntry.platform === "more_sites") {
+        logStreamTerminal("error", "ACCESS_DENIED");
         return res.status(403).json({
             error: {
                 code: "ACCESS_DENIED",
@@ -462,6 +520,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         const { response } = fetchHandle;
 
         if (!response.ok) {
+            logStreamTerminal("error", `UPSTREAM_HTTP_${response.status}`);
             return res.status(502).json({
                 error: {
                     code: "UPSTREAM_FETCH_FAILED",
@@ -476,6 +535,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         // Validate upstream Content-Type
         if (!isPermittedMediaContentType(rawContentType)) {
             fetchHandle.abort();
+            logStreamTerminal("error", "UNSAFE_CONTENT_TYPE");
             return res.status(502).json({
                 error: {
                     code: "UNSAFE_CONTENT_TYPE",
@@ -508,6 +568,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
         meter.on("error", (err) => {
             fetchHandle.abort();
+            logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
             if (!res.headersSent) {
                 res.status(413).json({
                     error: {
@@ -526,6 +587,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
     } catch (err) {
         if (fetchHandle) fetchHandle.abort();
+        logStreamTerminal("error", err.code || "STREAM_ERROR");
 
         const status = err instanceof SecurityHTTPError ? err.statusCode : 500;
         if (!res.headersSent) {
@@ -676,8 +738,10 @@ app.use("/api", (req, res) => {
 app.use((err, req, res, next) => {
     logger.error({
         requestId: req.id,
-        message: err.message,
-        stack: process.env.NODE_ENV === "development" ? err.stack : undefined
+        operation: "http",
+        status: "error",
+        code: err.code || "INTERNAL_SERVER_ERROR",
+        message: err.message
     });
 
     res.status(err.statusCode || 500).json({
