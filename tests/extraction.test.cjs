@@ -434,6 +434,53 @@ test("Instagram Integration: Secondary provider maps url_list when media_details
     assert.equal(result.type, "video");
 });
 
+test("Instagram Integration: Fallback candidate URL from unapproved domain is rejected by validateMediaUrl", async () => {
+    const mockInstagramDirect = {
+        instagramGetUrl: async () => ({
+            results_number: 1,
+            media_details: [
+                {
+                    type: "video",
+                    url: "https://unapproved-domain.test/video.mp4"
+                }
+            ]
+        })
+    };
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: async () => "<html></html>",
+            provider: mockInstagramDirect
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNAPPROVED_MEDIA_DOMAIN");
+            return true;
+        }
+    );
+});
+
+test("Instagram Integration: Fallback candidate URL with private IP is rejected by validateMediaUrl", async () => {
+    const mockInstagramDirect = {
+        instagramGetUrl: async () => ({
+            results_number: 1,
+            url_list: ["https://127.0.0.1/video.mp4"]
+        })
+    };
+
+    await assert.rejects(
+        () => extractInstagram("https://www.instagram.com/reel/DA123456789/", {
+            fetchHtml: async () => "<html></html>",
+            provider: mockInstagramDirect
+        }),
+        (err) => {
+            assert.ok(err instanceof ValidationError);
+            assert.equal(err.code, "UNAPPROVED_MEDIA_DOMAIN");
+            return true;
+        }
+    );
+});
+
 test("Instagram Integration: Upstream HTTP 401/403 classified as PLATFORM_CHALLENGE", async () => {
     const { SecurityHTTPError } = require("../lib/http-client.cjs");
     const mockFetchHtml = async () => {

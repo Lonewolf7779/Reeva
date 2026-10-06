@@ -21,7 +21,7 @@ const {
 const { validateGenericSourceUrl, ValidationError } = require("../lib/url-validator.cjs");
 const { extractGeneric } = require("../lib/extraction/adapters/generic.cjs");
 const { ExtractionError } = require("../lib/extraction/types.cjs");
-const { defaultCommandRunner } = require("../lib/extraction/adapters/youtube.cjs");
+const { defaultCommandRunner, extractYouTube } = require("../lib/extraction/adapters/youtube.cjs");
 
 // Helper to send raw HTTP/CONNECT requests over a TCP socket
 function sendRawSocketRequest(port, rawRequest) {
@@ -148,6 +148,28 @@ test("Egress Destination: IPv6 ULA blocked", async () => {
     );
 });
 
+test("Egress Destination: Cloud metadata internal hostnames blocked", async () => {
+    await assert.rejects(
+        () => validateEgressDestination("metadata.google.internal", 80),
+        (err) => err instanceof EgressSecurityError && err.code === "RESTRICTED_DOMAIN"
+    );
+    await assert.rejects(
+        () => validateEgressDestination("instance-data.ec2.internal", 80),
+        (err) => err instanceof EgressSecurityError && err.code === "RESTRICTED_DOMAIN"
+    );
+});
+
+test("Egress Destination: IPv6 cloud metadata / link-local blocked", async () => {
+    await assert.rejects(
+        () => validateEgressDestination("fd00:ec2::254", 80),
+        (err) => err instanceof EgressSecurityError && err.code === "RESTRICTED_IP"
+    );
+    await assert.rejects(
+        () => validateEgressDestination("[fd00:ec2::254]", 443),
+        (err) => err instanceof EgressSecurityError && err.code === "RESTRICTED_IP"
+    );
+});
+
 test("Egress Destination: Unsafe ports blocked", async () => {
     const unsafePorts = [22, 25, 3000, 5432, 6379, 8080, 8443, 27017];
     for (const port of unsafePorts) {
@@ -215,6 +237,35 @@ test("Egress CONNECT: IPv6 loopback CONNECT blocked with 403", async () => {
         const rawReq = "CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n\r\n";
         const response = await sendRawSocketRequest(proxy.port, rawReq);
         assert.ok(response.includes("403 Forbidden"));
+    } finally {
+        await proxy.close();
+    }
+});
+
+test("Egress CONNECT: Cloud metadata internal hostname CONNECT blocked with 403", async () => {
+    const proxy = await createEgressProxy();
+    try {
+        const rawReq1 = "CONNECT metadata.google.internal:80 HTTP/1.1\r\nHost: metadata.google.internal:80\r\n\r\n";
+        const res1 = await sendRawSocketRequest(proxy.port, rawReq1);
+        assert.ok(res1.includes("403 Forbidden"), `Expected 403, got: ${res1}`);
+        assert.ok(res1.includes("internal or loopback domain"));
+
+        const rawReq2 = "CONNECT instance-data.ec2.internal:80 HTTP/1.1\r\nHost: instance-data.ec2.internal:80\r\n\r\n";
+        const res2 = await sendRawSocketRequest(proxy.port, rawReq2);
+        assert.ok(res2.includes("403 Forbidden"), `Expected 403, got: ${res2}`);
+        assert.ok(res2.includes("internal or loopback domain"));
+    } finally {
+        await proxy.close();
+    }
+});
+
+test("Egress CONNECT: IPv6 cloud metadata CONNECT blocked with 403", async () => {
+    const proxy = await createEgressProxy();
+    try {
+        const rawReq = "CONNECT [fd00:ec2::254]:443 HTTP/1.1\r\nHost: [fd00:ec2::254]:443\r\n\r\n";
+        const response = await sendRawSocketRequest(proxy.port, rawReq);
+        assert.ok(response.includes("403 Forbidden"), `Expected 403, got: ${response}`);
+        assert.ok(response.includes("restricted IP"));
     } finally {
         await proxy.close();
     }
@@ -504,23 +555,159 @@ test("Configuration Security: Malformed REEVA_EGRESS_PROXY_URL is rejected", asy
     }
 });
 
-test("Subprocess Security: defaultCommandRunner sanitizes proxy bypass environment variables", async () => {
-    // Set dirty proxy bypass environment variables
-    process.env.NO_PROXY = "127.0.0.1,localhost";
-    process.env.HTTP_PROXY = "http://attacker-controlled.net";
+test("Process Security: YouTube extraction passes --proxy flag pointing to loopback egress proxy in all modes", async () => {
+    let capturedArgs = [];
+    const capturingRunner = async ({ args }) => {
+        capturedArgs = args;
+        const outIdx = args.indexOf("-o");
+        if (outIdx !== -1 && args[outIdx + 1]) {
+            fs.writeFileSync(args[outIdx + 1], Buffer.alloc(1024));
+        }
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+                id: "test_yt",
+                title: "Test Video",
+                url: "https://googlevideo.com/videoplayback?id=test_yt",
+                requested_formats: [{ url: "https://googlevideo.com/videoplayback?id=test_yt" }]
+            }),
+            stderr: ""
+        };
+    };
+
+    // Mode 1: VIDEO_AND_AUDIO
+    await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_AND_AUDIO",
+        commandRunner: capturingRunner,
+        metadataTimeoutMs: 5000
+    });
+    assert.ok(capturedArgs.includes("--proxy"), "yt-dlp args must include --proxy in VIDEO_AND_AUDIO mode");
+    let proxyIdx = capturedArgs.indexOf("--proxy");
+    assert.ok(capturedArgs[proxyIdx + 1].startsWith("http://127.0.0.1:"), "Proxy must be bound to 127.0.0.1");
+
+    // Mode 2: VIDEO_ONLY
+    capturedArgs = [];
+    await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_ONLY",
+        commandRunner: capturingRunner,
+        metadataTimeoutMs: 5000
+    });
+    assert.ok(capturedArgs.includes("--proxy"), "yt-dlp args must include --proxy in VIDEO_ONLY mode");
+    proxyIdx = capturedArgs.indexOf("--proxy");
+    assert.ok(capturedArgs[proxyIdx + 1].startsWith("http://127.0.0.1:"), "Proxy must be bound to 127.0.0.1");
+
+    // Mode 3: AUDIO_ONLY
+    capturedArgs = [];
+    await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "AUDIO_ONLY",
+        commandRunner: capturingRunner,
+        metadataTimeoutMs: 5000
+    });
+    assert.ok(capturedArgs.includes("--proxy"), "yt-dlp args must include --proxy in AUDIO_ONLY mode");
+    proxyIdx = capturedArgs.indexOf("--proxy");
+    assert.ok(capturedArgs[proxyIdx + 1].startsWith("http://127.0.0.1:"), "Proxy must be bound to 127.0.0.1");
+});
+
+test("Configuration Security: YouTube extraction rejects disabling egress proxy in production", async () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origDisable = process.env.REEVA_DISABLE_EGRESS_PROXY;
+    process.env.NODE_ENV = "production";
+    process.env.REEVA_DISABLE_EGRESS_PROXY = "true";
+
+    try {
+        await assert.rejects(
+            () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+                commandRunner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("cannot be disabled in production")
+        );
+    } finally {
+        process.env.NODE_ENV = origNodeEnv;
+        if (origDisable !== undefined) {
+            process.env.REEVA_DISABLE_EGRESS_PROXY = origDisable;
+        } else {
+            delete process.env.REEVA_DISABLE_EGRESS_PROXY;
+        }
+    }
+});
+
+test("Configuration Security: YouTube extraction rejects malformed REEVA_EGRESS_PROXY_URL", async () => {
+    const origProxyUrl = process.env.REEVA_EGRESS_PROXY_URL;
+    process.env.REEVA_EGRESS_PROXY_URL = "not-a-valid-url";
+
+    try {
+        await assert.rejects(
+            () => extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+                commandRunner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("REEVA_EGRESS_PROXY_URL is malformed")
+        );
+    } finally {
+        if (origProxyUrl !== undefined) {
+            process.env.REEVA_EGRESS_PROXY_URL = origProxyUrl;
+        } else {
+            delete process.env.REEVA_EGRESS_PROXY_URL;
+        }
+    }
+});
+
+test("Process Security: YouTube extraction propagates AbortSignal and aborts subprocess", async () => {
+    const controller = new AbortController();
+    const startTime = Date.now();
+
+    const extractPromise = extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        signal: controller.signal,
+        commandRunner: ({ signal }) => defaultCommandRunner({
+            command: "node",
+            args: ["-e", "setTimeout(() => {}, 30000);"],
+            timeoutMs: 30000,
+            signal
+        })
+    });
+
+    setTimeout(() => {
+        controller.abort();
+    }, 50);
+
+    await assert.rejects(
+        () => extractPromise,
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.ok(err.message.includes("cancelled by client"));
+            return true;
+        }
+    );
+
+    const elapsed = Date.now() - startTime;
+    assert.ok(elapsed < 2500, `Subprocess must be terminated immediately upon abort (elapsed: ${elapsed}ms)`);
+});
+
+test("Subprocess Security: defaultCommandRunner sanitizes all proxy bypass environment variables", async () => {
+    // Set all dirty proxy bypass environment variables (both upper and lowercase variants)
+    const proxyVars = [
+        "HTTP_PROXY", "http_proxy",
+        "HTTPS_PROXY", "https_proxy",
+        "ALL_PROXY", "all_proxy",
+        "NO_PROXY", "no_proxy"
+    ];
+
+    for (const v of proxyVars) {
+        process.env[v] = `http://attacker-controlled-${v}.net`;
+    }
 
     try {
         // Run a lightweight command printing python environment to verify sanitization
         const res = await defaultCommandRunner({
             command: "python",
-            args: ["-c", "import os; print('NO_PROXY' in os.environ, 'HTTP_PROXY' in os.environ)"],
+            args: ["-c", "import os; print([k in os.environ for k in ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy']])"],
             timeoutMs: 5000
         });
 
         assert.equal(res.exitCode, 0);
-        assert.ok(res.stdout.includes("False False"), `Expected False False, got: ${res.stdout}`);
+        assert.ok(res.stdout.includes("[False, False, False, False, False, False, False, False]"), `Expected all False, got: ${res.stdout}`);
     } finally {
-        delete process.env.NO_PROXY;
-        delete process.env.HTTP_PROXY;
+        for (const v of proxyVars) {
+            delete process.env[v];
+        }
     }
 });

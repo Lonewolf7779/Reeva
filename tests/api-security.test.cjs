@@ -74,6 +74,8 @@ test("Security Headers: Helmet CSP and protections are properly configured", asy
 
         assert.ok(csp, "Content-Security-Policy header must be present");
         assert.ok(csp.includes("script-src 'self'"), "script-src should restrict to 'self'");
+        assert.ok(!csp.includes("style-src 'self' 'unsafe-inline'"), "style-src must not contain 'unsafe-inline'");
+        assert.ok(csp.includes("style-src 'self'"), "style-src must restrict strictly to 'self'");
         assert.ok(csp.includes("frame-ancestors 'none'"), "Clickjacking protection required");
         assert.equal(res.headers["x-content-type-options"], "nosniff");
         assert.equal(res.headers["x-frame-options"], "DENY");

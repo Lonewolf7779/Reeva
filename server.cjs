@@ -28,6 +28,7 @@ const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
 const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
 const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
+const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
 
 // Clean stale temporary media artifacts on server startup
 cleanStaleTempFiles();
@@ -65,7 +66,7 @@ app.use(helmet({
         directives: {
             defaultSrc: ["'self'"],
             scriptSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"], // permits internal style block in index.html
+            styleSrc: ["'self'"],
             imgSrc: ["'self'", "data:", "blob:"],
             mediaSrc: ["'self'", "blob:"],
             connectSrc: ["'self'"],
@@ -849,7 +850,11 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
             clearInterval(staleCleanupInterval);
         }
 
-        // 5. Clean up temporary files and registry entries safely
+        // 5. Clean up temporary files, registry entries, and egress proxy safely
+        try {
+            await stopDefaultEgressProxy();
+        } catch (_) {}
+
         try {
             defaultRegistry.clear();
         } catch (_) {}
