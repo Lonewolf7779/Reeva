@@ -1,99 +1,134 @@
-// public/app.js — Frontend client logic for Reeva
+// public/app.js — Frontend Application Orchestrator
 "use strict";
 
 document.addEventListener("DOMContentLoaded", () => {
-    const getBtn = document.getElementById("get");
-    const downloadBtn = document.getElementById("download");
-    const urlIn = document.getElementById("url");
-    const log = document.getElementById("log");
-    const preview = document.getElementById("preview");
-    const consent = document.getElementById("consent");
-    const whyConsent = document.getElementById("why-consent");
-    const platformBtns = document.querySelectorAll(".platform-btn");
+    // Resolve modular dependencies (with fallback to global namespace)
+    const state = (window.Reeva && window.Reeva.state && window.Reeva.state.defaultState) || null;
+    const api = (window.Reeva && window.Reeva.api) || null;
+    const uiModule = (window.Reeva && window.Reeva.ui) || null;
+    const i18n = (window.Reeva && window.Reeva.i18n) || null;
 
-    let currentPlatform = "instagram";
-    let activeDownloadUrl = "";
+    if (!state || !api || !uiModule || !i18n) {
+        console.error("Reeva frontend architecture dependencies failed to load.");
+        return;
+    }
 
-    // Platform selection
-    platformBtns.forEach(btn => {
-        btn.addEventListener("click", () => {
-            platformBtns.forEach(b => b.classList.remove("active"));
-            btn.classList.add("active");
-            currentPlatform = btn.dataset.platform;
-            log.style.color = "var(--muted)";
-            log.textContent = `Selected platform: ${btn.textContent.trim()}`;
-        });
-    });
+    const ui = uiModule.createUiController(document);
+    if (!ui) return;
 
-    // Consent "Why?" explanation
-    if (whyConsent) {
-        whyConsent.addEventListener("click", (e) => {
-            e.preventDefault();
-            alert("Reeva is intended only for public content or content you own or have permission to download.");
+    const { t } = i18n;
+    const { elements } = ui;
+
+    // Load persisted or preferred language
+    const lang = i18n.getStoredLanguage();
+    state.setLanguage(lang);
+
+    // =========================================================================
+    // 1. Platform Selection
+    // =========================================================================
+    if (elements.platformBtns) {
+        elements.platformBtns.forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const targetPlatform = btn.dataset.platform;
+                if (!targetPlatform || !state.setPlatform(targetPlatform)) {
+                    return;
+                }
+
+                ui.setActivePlatform(targetPlatform);
+
+                const platformLabel = t(`platform.${targetPlatform}`, {}, state.getLanguage()) || targetPlatform;
+                ui.setLog(t("platform.selected", { platform: platformLabel }, state.getLanguage()), "info");
+            });
         });
     }
 
-    // Media fetch handler
-    getBtn.addEventListener("click", async () => {
-        const u = urlIn.value.trim();
+    // =========================================================================
+    // 2. Consent Dialog
+    // =========================================================================
+    if (elements.whyConsent) {
+        elements.whyConsent.addEventListener("click", (e) => {
+            e.preventDefault();
+            alert(t("consent.alert", {}, state.getLanguage()));
+        });
+    }
 
-        if (!consent.checked) {
-            alert("Please check the confirmation box before downloading.");
+    // =========================================================================
+    // 3. Media Extraction Trigger
+    // =========================================================================
+    async function handleGetMedia() {
+        const currentLang = state.getLanguage();
+
+        if (!ui.isConsentChecked()) {
+            alert(t("consent.required", {}, currentLang));
             return;
         }
 
-        if (!u) {
-            log.style.color = "var(--error)";
-            log.textContent = "⚠️ Please paste a video link first.";
+        const rawUrl = ui.getUrlInput();
+        if (!rawUrl) {
+            ui.setLog(t("status.empty_url", {}, currentLang), "error");
             return;
         }
 
-        log.style.color = "var(--muted)";
-        log.textContent = "Fetching video... please wait.";
-        preview.style.display = "none";
-        preview.removeAttribute("src");
-        downloadBtn.style.display = "none";
-        activeDownloadUrl = "";
+        // Transition to loading state
+        state.setStatus("loading");
+        state.clearMediaUrls();
+        ui.setLoading(true, t("status.fetching", {}, currentLang));
+        ui.hidePreview();
+        ui.setDownloadButtonVisible(false);
 
-        try {
-            const endpoint = `/api/download/${encodeURIComponent(currentPlatform)}?url=${encodeURIComponent(u)}`;
-            const resp = await fetch(endpoint, {
-                headers: { "Accept": "application/json" }
-            });
-            const data = await resp.json();
+        const result = await api.fetchMedia(state.getPlatform(), rawUrl);
 
-            if (!resp.ok) {
-                const errMsg = data?.error?.message || data?.error || "Failed to retrieve media. Please try again.";
-                log.style.color = "var(--error)";
-                log.textContent = `❌ ${errMsg}`;
-                return;
-            }
+        ui.setLoading(false);
 
-            // Support both new secure media format and fallback
-            const streamUrl = data.streamUrl || data.videoUrl;
-            activeDownloadUrl = data.downloadUrl || streamUrl;
-
-            if (!streamUrl) {
-                log.style.color = "var(--error)";
-                log.textContent = "⚠️ Could not find a downloadable video for this link.";
-                return;
-            }
-
-            log.style.color = "var(--success)";
-            log.textContent = "✅ Video found! Click \"Download\" below.";
-            preview.src = streamUrl;
-            preview.style.display = "block";
-            downloadBtn.style.display = "inline-block";
-
-        } catch (e) {
-            log.style.color = "var(--error)";
-            log.textContent = "⚠️ Network error: " + e.message;
+        if (!result.success) {
+            state.setStatus("error");
+            const errorMessage = result.code === "NETWORK_ERROR"
+                ? t("status.network_error", { message: result.message }, currentLang)
+                : `❌ ${result.message || t("status.generic_error", {}, currentLang)}`;
+            ui.setLog(errorMessage, "error");
+            return;
         }
-    });
 
-    // Download action
-    downloadBtn.addEventListener("click", () => {
-        if (!activeDownloadUrl) return;
-        window.open(activeDownloadUrl, "_blank", "noopener,noreferrer");
-    });
+        if (!result.streamUrl) {
+            state.setStatus("error");
+            ui.setLog(t("status.not_found", {}, currentLang), "error");
+            return;
+        }
+
+        // Success state
+        state.setStatus("success");
+        state.setMediaUrls({
+            streamUrl: result.streamUrl,
+            downloadUrl: result.downloadUrl
+        });
+
+        ui.setLog(t("status.success", {}, currentLang), "success");
+        ui.showPreview(result.streamUrl);
+        ui.setDownloadButtonVisible(true);
+    }
+
+    if (elements.getBtn) {
+        elements.getBtn.addEventListener("click", handleGetMedia);
+    }
+
+    // Keyboard accessibility: Enter in URL input triggers extraction
+    if (elements.urlIn) {
+        elements.urlIn.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                handleGetMedia();
+            }
+        });
+    }
+
+    // =========================================================================
+    // 4. Download Trigger
+    // =========================================================================
+    if (elements.downloadBtn) {
+        elements.downloadBtn.addEventListener("click", () => {
+            const downloadUrl = state.getDownloadUrl();
+            if (!downloadUrl) return;
+            window.open(downloadUrl, "_blank", "noopener,noreferrer");
+        });
+    }
 });

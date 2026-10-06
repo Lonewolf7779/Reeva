@@ -1,0 +1,188 @@
+/* public/styles.css — Reeva Core Stylesheet */
+:root {
+    --bg: #0e0e10;
+    --card-bg: #151518;
+    --accent: #7f5af0;
+    --accent-hover: #9c7eff;
+    --text: #ffffff;
+    --muted: #9f9f9f;
+    --border: #2c2c2f;
+    --success: #00ff99;
+    --error: #ff4b4b;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+body {
+    background: radial-gradient(circle at top left, #1a1a1d, #0e0e10 80%);
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    margin: 0;
+}
+
+.card {
+    width: 90%;
+    max-width: 740px;
+    padding: 26px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--card-bg);
+    box-shadow: 0 0 18px rgba(127, 90, 240, 0.08);
+}
+
+h2 {
+    text-align: center;
+    font-weight: 600;
+    font-size: 1.4rem;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+
+p {
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+#platforms {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin: 18px 0;
+}
+
+.platform-btn {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.platform-btn:hover {
+    background: var(--accent-hover);
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+.platform-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(127, 90, 240, 0.5);
+}
+
+.platform-btn:focus-visible,
+button.action:focus-visible,
+input[type=text]:focus-visible,
+input[type=checkbox]:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 2px;
+}
+
+input[type=text] {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    background: #0b0b0c;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+input[type=text]:focus {
+    border-color: var(--accent);
+}
+
+.row {
+    margin-top: 12px;
+    display: flex;
+    gap: 10px;
+}
+
+button.action {
+    flex: 1;
+    padding: 12px;
+    font-size: 14px;
+    text-transform: uppercase;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+button.action:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+button.action:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#log {
+    margin-top: 14px;
+    padding: 10px;
+    border-radius: 8px;
+    min-height: 26px;
+    background: #0b0b0c;
+    border: 1px solid var(--border);
+    color: var(--success);
+    font-size: 14px;
+    white-space: pre-line;
+}
+
+video {
+    margin-top: 12px;
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: none;
+}
+
+label {
+    color: var(--muted);
+    font-size: 13px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    cursor: pointer;
+}
+
+a.small {
+    color: var(--accent-hover);
+    font-size: 12px;
+    text-decoration: underline;
+    margin-left: 8px;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+a.small:hover {
+    color: #fff;
+}
+
+footer {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 18px;
+}
