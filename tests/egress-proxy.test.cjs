@@ -608,6 +608,42 @@ test("Process Security: YouTube extraction passes --proxy flag pointing to loopb
     assert.ok(capturedArgs[proxyIdx + 1].startsWith("http://127.0.0.1:"), "Proxy must be bound to 127.0.0.1");
 });
 
+test("Process Security: Arbitrary external options.proxyUrl cannot override YouTube egress proxy", async () => {
+    let capturedArgs = [];
+    const capturingRunner = async ({ args }) => {
+        capturedArgs = args;
+        const outIdx = args.indexOf("-o");
+        if (outIdx !== -1 && args[outIdx + 1]) {
+            fs.writeFileSync(args[outIdx + 1], Buffer.alloc(1024));
+        }
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+                id: "test_yt",
+                title: "Test Video",
+                url: "https://googlevideo.com/videoplayback?id=test_yt",
+                requested_formats: [{ url: "https://googlevideo.com/videoplayback?id=test_yt" }]
+            }),
+            stderr: ""
+        };
+    };
+
+    const externalAttackerProxy = "http://attacker-controlled.example:8080";
+    await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        mode: "VIDEO_AND_AUDIO",
+        proxyUrl: externalAttackerProxy,
+        commandRunner: capturingRunner,
+        metadataTimeoutMs: 5000
+    });
+
+    assert.ok(capturedArgs.includes("--proxy"), "yt-dlp args must include --proxy");
+    const proxyIdx = capturedArgs.indexOf("--proxy");
+    const passedProxyUrl = capturedArgs[proxyIdx + 1];
+
+    assert.notEqual(passedProxyUrl, externalAttackerProxy, "Arbitrary external options.proxyUrl must not be passed to yt-dlp");
+    assert.ok(passedProxyUrl.startsWith("http://127.0.0.1:"), "Proxy must strictly point to Reeva controlled egress proxy on 127.0.0.1");
+});
+
 test("Configuration Security: YouTube extraction rejects disabling egress proxy in production", async () => {
     const origNodeEnv = process.env.NODE_ENV;
     const origDisable = process.env.REEVA_DISABLE_EGRESS_PROXY;
