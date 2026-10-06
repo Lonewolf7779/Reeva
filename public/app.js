@@ -55,6 +55,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 ui.setLog(t("platform.selected", { platform: platformLabel }, safeLang), "info");
             } else if (currentStatus === "success") {
                 ui.setLog(t("status.success", {}, safeLang), "success");
+            } else if (currentStatus === "loading") {
+                ui.setLoading(true, t("status.fetching", {}, safeLang));
             }
         });
     }
@@ -147,25 +149,28 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
 
+            // Dynamically resolve active language at render time so in-flight language changes are respected
+            const renderLang = state.getLanguage();
+
             if (!result.success) {
                 state.setStatus("error");
                 const errorMessage = result.code === "NETWORK_ERROR"
-                    ? t("status.network_error", { message: result.message }, currentLang)
-                    : `❌ ${result.message || t("status.generic_error", {}, currentLang)}`;
+                    ? t("status.network_error", { message: result.message }, renderLang)
+                    : `❌ ${result.message || t("status.generic_error", {}, renderLang)}`;
                 ui.setLog(errorMessage, "error");
                 return;
             }
 
             if (!result.streamUrl) {
                 state.setStatus("error");
-                ui.setLog(t("status.not_found", {}, currentLang), "error");
+                ui.setLog(t("status.not_found", {}, renderLang), "error");
                 return;
             }
 
             // Media URL security validation
             if (!api.isValidMediaUrl(result.streamUrl)) {
                 state.setStatus("error");
-                ui.setLog(`❌ ${t("status.generic_error", {}, currentLang)}`, "error");
+                ui.setLog(`❌ ${t("status.generic_error", {}, renderLang)}`, "error");
                 return;
             }
 
@@ -176,7 +181,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 downloadUrl: result.downloadUrl
             });
 
-            ui.setLog(t("status.success", {}, currentLang), "success");
+            ui.setLog(t("status.success", {}, renderLang), "success");
             ui.showPreview(result.streamUrl);
             ui.setDownloadButtonVisible(true);
 
@@ -185,7 +190,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             state.setStatus("error");
-            ui.setLog(t("status.network_error", { message: err.message || "Unknown error" }, currentLang), "error");
+            const renderLang = state.getLanguage();
+            ui.setLog(t("status.network_error", { message: err.message || "Unknown error" }, renderLang), "error");
         } finally {
             // Only restore button state if this is still the active request
             if (state.isCurrentRequest(requestId)) {

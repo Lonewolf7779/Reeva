@@ -11,45 +11,27 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
 
     /**
-     * Validates whether a media URL conform to safe relative or same-origin Reeva media paths.
-     * Prevents dangerous schemes (javascript:, data:, file:) and arbitrary domain redirects.
+     * Validates whether a media URL conforms strictly to the canonical Reeva media path contract.
+     * Accepts exclusively:
+     *   /api/media/<valid-media-id>
+     *   /api/media/<valid-media-id>?download=1
+     * where media ID matches ^[a-zA-Z0-9_-]{8,64}$
+     *
+     * Rejects traversal, extra path segments, arbitrary query parameters, fragments,
+     * control characters, newlines, whitespace, protocol-relative, absolute URLs, and dangerous schemes.
      *
      * @param {string} url
      * @returns {boolean}
      */
     function isValidMediaUrl(url) {
         if (!url || typeof url !== "string") return false;
-        const trimmed = url.trim();
 
-        // Reject whitespace, newlines, control characters
-        if (/[\s\x00-\x1F\x7F-\x9F]/.test(trimmed)) return false;
+        // Reject whitespace, newlines, control characters, or hash fragments anywhere in the URL
+        if (/[\s\x00-\x1F\x7F-\x9F#]/.test(url)) return false;
 
-        // Reject dangerous protocol schemes
-        if (/^(javascript|data|file|vbscript):/i.test(trimmed)) return false;
-
-        // Standard Reeva media route: /api/media/:mediaId or /api/media/:mediaId?download=1
-        if (/^\/api\/media\/[a-zA-Z0-9_\-]+(\?[a-zA-Z0-9_\-=&]*)?$/.test(trimmed)) {
-            return true;
-        }
-
-        // Relative path starting with /api/media/
-        if (trimmed.startsWith("/api/media/")) {
-            return true;
-        }
-
-        // Absolute URL check against same origin (if running in browser)
-        if (typeof window !== "undefined" && window.location && window.location.origin) {
-            try {
-                const parsed = new URL(trimmed, window.location.origin);
-                if (parsed.origin === window.location.origin && parsed.pathname.startsWith("/api/media/")) {
-                    return true;
-                }
-            } catch (_) {
-                return false;
-            }
-        }
-
-        return false;
+        // Strictly accept only /api/media/<valid-media-id> or /api/media/<valid-media-id>?download=1
+        // where media ID is 8 to 64 chars matching ^[a-zA-Z0-9_-]{8,64}$
+        return /^\/api\/media\/[a-zA-Z0-9_-]{8,64}(\?download=1)?$/.test(url);
     }
 
     /**
@@ -138,8 +120,8 @@
                 };
             }
 
-            // Media URL security validation
-            if (!isValidMediaUrl(streamUrl) || (downloadUrl && !isValidMediaUrl(downloadUrl))) {
+            // Media URL security validation: both streamUrl and downloadUrl must strictly be valid canonical media URLs
+            if (!isValidMediaUrl(streamUrl) || !isValidMediaUrl(downloadUrl)) {
                 return {
                     success: false,
                     code: "UNSAFE_MEDIA_URL",
