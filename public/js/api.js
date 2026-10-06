@@ -11,6 +11,48 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
 
     /**
+     * Validates whether a media URL conform to safe relative or same-origin Reeva media paths.
+     * Prevents dangerous schemes (javascript:, data:, file:) and arbitrary domain redirects.
+     *
+     * @param {string} url
+     * @returns {boolean}
+     */
+    function isValidMediaUrl(url) {
+        if (!url || typeof url !== "string") return false;
+        const trimmed = url.trim();
+
+        // Reject whitespace, newlines, control characters
+        if (/[\s\x00-\x1F\x7F-\x9F]/.test(trimmed)) return false;
+
+        // Reject dangerous protocol schemes
+        if (/^(javascript|data|file|vbscript):/i.test(trimmed)) return false;
+
+        // Standard Reeva media route: /api/media/:mediaId or /api/media/:mediaId?download=1
+        if (/^\/api\/media\/[a-zA-Z0-9_\-]+(\?[a-zA-Z0-9_\-=&]*)?$/.test(trimmed)) {
+            return true;
+        }
+
+        // Relative path starting with /api/media/
+        if (trimmed.startsWith("/api/media/")) {
+            return true;
+        }
+
+        // Absolute URL check against same origin (if running in browser)
+        if (typeof window !== "undefined" && window.location && window.location.origin) {
+            try {
+                const parsed = new URL(trimmed, window.location.origin);
+                if (parsed.origin === window.location.origin && parsed.pathname.startsWith("/api/media/")) {
+                    return true;
+                }
+            } catch (_) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Constructs the extraction endpoint URL for a given platform and source URL.
      * Preserves exact backend route: /api/download/:platform?url=<encoded URL>
      *
@@ -29,12 +71,14 @@
     }
 
     /**
-     * Executes extraction request against Reeva API and normalizes response.
+     * Executes extraction request against Reeva API, validates media URLs, and normalizes response.
+     * Supports AbortController cancellation via options.signal.
      *
      * @param {string} platform
      * @param {string} rawUrl
      * @param {object} [options={}]
      * @param {typeof fetch} [options.fetchFn]
+     * @param {AbortSignal} [options.signal]
      * @returns {Promise<{ success: boolean, streamUrl?: string, downloadUrl?: string, code?: string, message?: string }>}
      */
     async function fetchMedia(platform, rawUrl, options = {}) {
@@ -49,9 +93,14 @@
 
         try {
             const endpoint = buildDownloadUrl(platform, rawUrl);
-            const resp = await fetchFn(endpoint, {
+            const fetchOpts = {
                 headers: { "Accept": "application/json" }
-            });
+            };
+            if (options.signal) {
+                fetchOpts.signal = options.signal;
+            }
+
+            const resp = await fetchFn(endpoint, fetchOpts);
 
             let data;
             try {
@@ -89,6 +138,15 @@
                 };
             }
 
+            // Media URL security validation
+            if (!isValidMediaUrl(streamUrl) || (downloadUrl && !isValidMediaUrl(downloadUrl))) {
+                return {
+                    success: false,
+                    code: "UNSAFE_MEDIA_URL",
+                    message: "Received invalid or unsafe media stream reference."
+                };
+            }
+
             return {
                 success: true,
                 streamUrl,
@@ -96,6 +154,14 @@
             };
 
         } catch (err) {
+            if (err && (err.name === "AbortError" || err.code === 20)) {
+                return {
+                    success: false,
+                    code: "ABORTED",
+                    message: "Request was cancelled."
+                };
+            }
+
             return {
                 success: false,
                 code: "NETWORK_ERROR",
@@ -105,6 +171,7 @@
     }
 
     return {
+        isValidMediaUrl,
         buildDownloadUrl,
         fetchMedia
     };

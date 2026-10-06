@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
 
 <head>
     <meta charset="utf-8" />
@@ -10,8 +10,16 @@
 
 <body>
     <div class="card">
-        <h2>Reeva — Smart, simple, and lightning-fast downloader</h2>
-        <p>Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+        <div class="lang-bar">
+            <label id="lang-label" for="lang-select" class="lang-label">Language:</label>
+            <select id="lang-select" class="lang-select" aria-labelledby="lang-label">
+                <option value="en">English</option>
+                <option value="hi">हिन्दी (Hindi)</option>
+            </select>
+        </div>
+
+        <h2 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h2>
+        <p id="app-subtitle">Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
 
         <!-- Platform Selector -->
         <div id="platforms">
@@ -23,26 +31,26 @@
             <button class="platform-btn" data-platform="generic" type="button">More Sites</button>
         </div>
 
-        <p style="color:var(--muted); text-align:center;">Paste your link below and click <b>Get</b>.</p>
+        <p class="instruction" id="input-instruction">Paste your link below and click Get.</p>
         <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" aria-label="Video URL" />
 
         <div class="row">
             <button id="get" class="action" type="button">Get</button>
-            <button id="download" class="action" style="display:none" type="button">Download</button>
+            <button id="download" class="action hidden" type="button" aria-hidden="true">Download</button>
         </div>
 
-        <label>
+        <label id="consent-label">
             <input id="consent" type="checkbox">
-            I confirm I own or have permission to download this content.
+            <span id="consent-text">I confirm I own or have permission to download this content.</span>
             <a id="why-consent" class="small" href="#">Why?</a>
         </label>
 
         <div id="log" role="status" aria-live="polite"></div>
-        <video id="preview" controls aria-label="Media preview"></video>
+        <video id="preview" controls class="hidden" aria-label="Media preview"></video>
 
         <footer>
-            Disclaimer: This tool is for personal and educational use only.<br>
-            We never store or host media. All rights belong to their respective owners.
+            <span id="footer-disclaimer">Disclaimer: This tool is for personal and educational use only.</span><br>
+            <span id="footer-copyright">We never store or host media. All rights belong to their respective owners.</span>
         </footer>
     </div>
 

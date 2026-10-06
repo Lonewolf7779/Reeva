@@ -36,6 +36,7 @@
         let activeDownloadUrl = "";
         let consentGiven = false;
         let language = initialOptions.language || "en";
+        let activeRequestId = 0;
 
         const listeners = new Set();
 
@@ -54,7 +55,8 @@
                 activeStreamUrl,
                 activeDownloadUrl,
                 consentGiven,
-                language
+                language,
+                activeRequestId
             });
         }
 
@@ -116,10 +118,24 @@
             return language;
         }
 
+        function startRequest() {
+            activeRequestId += 1;
+            return activeRequestId;
+        }
+
+        function isCurrentRequest(id) {
+            return id === activeRequestId;
+        }
+
+        function getActiveRequestId() {
+            return activeRequestId;
+        }
+
         function reset() {
             currentStatus = "idle";
             activeStreamUrl = "";
             activeDownloadUrl = "";
+            activeRequestId = 0;
             notify();
         }
 
@@ -133,6 +149,7 @@
 
         return {
             SUPPORTED_PLATFORMS,
+            DEFAULT_PLATFORM,
             getState,
             getPlatform,
             setPlatform,
@@ -146,6 +163,9 @@
             isConsentGiven,
             setLanguage,
             getLanguage,
+            startRequest,
+            isCurrentRequest,
+            getActiveRequestId,
             reset,
             subscribe
         };

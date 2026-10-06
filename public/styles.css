@@ -186,3 +186,44 @@ footer {
     text-align: center;
     margin-top: 18px;
 }
+
+.instruction {
+    color: var(--muted);
+    text-align: center;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.lang-bar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.lang-label {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 0;
+}
+
+.lang-select {
+    background: #0b0b0c;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.lang-select:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 2px;
+}
+
