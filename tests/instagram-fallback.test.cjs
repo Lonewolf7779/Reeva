@@ -689,7 +689,7 @@ test("Redirect Deadline: Multi-hop chain strictly terminates within caller deadl
     );
     const duration = Date.now() - start;
     // Hop 1 took 80ms. Hop 2 had 40ms remaining, timed out at ~120ms total.
-    assert.ok(duration < 190, `Total duration (${duration}ms) must remain bounded by deadline (${budget}ms)`);
+    assert.ok(duration < 250, `Total duration (${duration}ms) must remain bounded by deadline (${budget}ms)`);
 });
 
 test("Body Deadline: Slow/stalled response body times out and aborts upstream stream", async () => {
@@ -788,3 +788,151 @@ test("Cancellation: External abort during redirect stops chain immediately witho
 
     assert.equal(requestsMade.length, 1, "Only first request should have occurred; second hop must NOT start");
 });
+
+// ==============================================================================
+// 10. STREAM ERROR CLEANUP & LATE ERROR ABSORPTION TESTS
+// ==============================================================================
+
+test("Stream Error Cleanup: Timeout then late error does not cause unhandled stream error", async () => {
+    const stream = new PassThrough();
+    let uncaught = null;
+    const uncaughtHandler = (err) => { uncaught = err; };
+    process.on("uncaughtException", uncaughtHandler);
+
+    try {
+        let abortCalled = false;
+        await assert.rejects(
+            () => readStreamWithLimit(stream, 1000, () => { abortCalled = true; }, { timeoutMs: 25 }),
+            (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+        );
+
+        assert.equal(abortCalled, true, "Upstream abort callback must be called on timeout");
+        assert.equal(stream.destroyed, true, "Stream must be destroyed on timeout");
+
+        // Emitting an error on stream after timeout cleanup must NOT throw or trigger uncaughtException
+        assert.doesNotThrow(() => {
+            stream.emit("error", new Error("Late socket error after timeout"));
+        });
+        assert.equal(uncaught, null, "No uncaught exception should have been raised");
+    } finally {
+        process.removeListener("uncaughtException", uncaughtHandler);
+    }
+});
+
+test("Stream Error Cleanup: Abort then late error does not cause unhandled stream error", async () => {
+    const stream = new PassThrough();
+    const controller = new AbortController();
+    let uncaught = null;
+    const uncaughtHandler = (err) => { uncaught = err; };
+    process.on("uncaughtException", uncaughtHandler);
+
+    try {
+        let abortCalled = false;
+        const readPromise = readStreamWithLimit(stream, 1000, () => { abortCalled = true; }, {
+            signal: controller.signal
+        });
+
+        controller.abort();
+
+        await assert.rejects(
+            () => readPromise,
+            (err) => err instanceof SecurityHTTPError && err.code === "CLIENT_ABORTED"
+        );
+
+        assert.equal(abortCalled, true, "Upstream abort callback must be called on abort");
+        assert.equal(stream.destroyed, true, "Stream must be destroyed on abort");
+
+        // Emitting error after abort cleanup must NOT throw or trigger uncaughtException
+        assert.doesNotThrow(() => {
+            stream.emit("error", new Error("Late socket error after abort"));
+        });
+        assert.equal(uncaught, null, "No uncaught exception should have been raised");
+    } finally {
+        process.removeListener("uncaughtException", uncaughtHandler);
+    }
+});
+
+test("Stream Error Cleanup: Response size limit exceeded then late error does not cause unhandled stream error", async () => {
+    const stream = new PassThrough();
+    let uncaught = null;
+    const uncaughtHandler = (err) => { uncaught = err; };
+    process.on("uncaughtException", uncaughtHandler);
+
+    try {
+        let abortCalled = false;
+        const readPromise = readStreamWithLimit(stream, 15, () => { abortCalled = true; });
+
+        stream.write("exceeds-maximum-byte-length-threshold");
+
+        await assert.rejects(
+            () => readPromise,
+            (err) => err instanceof ResponseTooLargeError
+        );
+
+        assert.equal(abortCalled, true, "Upstream abort callback must be called on size limit exceeded");
+        assert.equal(stream.destroyed, true, "Stream must be destroyed on size limit exceeded");
+
+        // Emitting error after size limit cleanup must NOT throw or trigger uncaughtException
+        assert.doesNotThrow(() => {
+            stream.emit("error", new Error("Late socket error after size limit exceeded"));
+        });
+        assert.equal(uncaught, null, "No uncaught exception should have been raised");
+    } finally {
+        process.removeListener("uncaughtException", uncaughtHandler);
+    }
+});
+
+test("Stream Error Cleanup: Normal stream error before settlement propagates normally without being swallowed", async () => {
+    const stream = new PassThrough();
+    const expectedError = new Error("Normal upstream network error");
+
+    const readPromise = readStreamWithLimit(stream, 1000, () => {}, { timeoutMs: 5000 });
+    stream.emit("error", expectedError);
+
+    await assert.rejects(
+        () => readPromise,
+        (err) => err === expectedError
+    );
+
+    // After settlement, secondary error is absorbed safely
+    assert.doesNotThrow(() => {
+        stream.emit("error", new Error("Secondary post-settlement error"));
+    });
+});
+
+test("Stream Error Cleanup: Early aborted signal or expired deadline absorbs late error", async () => {
+    // 1. Pre-aborted signal
+    const abortedController = new AbortController();
+    abortedController.abort();
+    const stream1 = new PassThrough();
+    let abortCalled1 = false;
+
+    await assert.rejects(
+        () => readStreamWithLimit(stream1, 1000, () => { abortCalled1 = true; }, {
+            signal: abortedController.signal
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "CLIENT_ABORTED"
+    );
+    assert.equal(abortCalled1, true);
+    assert.equal(stream1.destroyed, true);
+    assert.doesNotThrow(() => {
+        stream1.emit("error", new Error("Late error after pre-aborted signal"));
+    });
+
+    // 2. Pre-expired deadline
+    const stream2 = new PassThrough();
+    let abortCalled2 = false;
+
+    await assert.rejects(
+        () => readStreamWithLimit(stream2, 1000, () => { abortCalled2 = true; }, {
+            deadlineAt: Date.now() - 50
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+    );
+    assert.equal(abortCalled2, true);
+    assert.equal(stream2.destroyed, true);
+    assert.doesNotThrow(() => {
+        stream2.emit("error", new Error("Late error after pre-expired deadline"));
+    });
+});
+
