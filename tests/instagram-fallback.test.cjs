@@ -3,7 +3,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { Readable } = require("stream");
+const { Readable, PassThrough } = require("stream");
 const {
     extractInstagram,
     extractShortcode,
@@ -14,7 +14,7 @@ const {
 } = require("../lib/extraction/adapters/instagram.cjs");
 const { validateSourceUrl, ValidationError } = require("../lib/url-validator.cjs");
 const { SSRFError } = require("../lib/ssrf-filter.cjs");
-const { SecurityHTTPError, secureFetch, ResponseTooLargeError } = require("../lib/http-client.cjs");
+const { SecurityHTTPError, secureFetch, readStreamWithLimit, ResponseTooLargeError } = require("../lib/http-client.cjs");
 const { ExtractionError, EXTRACTION_ERROR_CODES } = require("../lib/extraction/types.cjs");
 
 // Helper to create a readable stream from string
@@ -616,4 +616,175 @@ test("Instagram E2E Fallback: Primary HTML yields no media -> Native fallback su
     assert.equal(result.url, "https://scontent.cdninstagram.com/v/t50/fallback_reel.mp4");
     assert.equal(result.type, "video");
     assert.equal(result.title, "Native Fallback Reel");
+});
+
+// ==============================================================================
+// 9. PHASE 3.18B-FIX2: REDIRECT AND RESPONSE BODY DEADLINE TESTS
+// ==============================================================================
+
+test("Redirect Deadline: Hops receive progressively smaller remaining budgets and do not reset", async () => {
+    const hopCalls = [];
+
+    const mockFetchImpl = async (url) => {
+        hopCalls.push(url);
+        if (url.endsWith("/share/1")) {
+            await new Promise((r) => setTimeout(r, 60));
+            return {
+                status: 302,
+                headers: new Map([["location", "https://www.instagram.com/share/2"]])
+            };
+        }
+        if (url.endsWith("/share/2")) {
+            await new Promise((r) => setTimeout(r, 60));
+            return {
+                status: 302,
+                headers: new Map([["location", "https://www.instagram.com/share/3"]])
+            };
+        }
+        if (url.endsWith("/share/3")) {
+            await new Promise((r) => setTimeout(r, 60));
+            return {
+                status: 200,
+                headers: new Map(),
+                ok: true
+            };
+        }
+    };
+
+    const deadlineAt = Date.now() + 150; // Total 150ms budget for all hops
+    await assert.rejects(
+        () => secureFetch("https://www.instagram.com/share/1", {
+            allowedDomains: ["instagram.com", "www.instagram.com"],
+            maxRedirects: 3,
+            deadlineAt,
+            fetchImpl: mockFetchImpl
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+    );
+
+    // Hop 1 and 2 ran; Hop 3 timed out before or during execution. Hop 4 never ran.
+    assert.ok(hopCalls.length <= 3, `Expected at most 3 hop attempts, got ${hopCalls.length}`);
+});
+
+test("Redirect Deadline: Multi-hop chain strictly terminates within caller deadline", async () => {
+    const mockFetchImpl = async (url) => {
+        await new Promise((r) => setTimeout(r, 80));
+        const num = parseInt(url.slice(-1), 10) || 1;
+        return {
+            status: 302,
+            headers: new Map([["location", `https://www.instagram.com/share/${num + 1}`]])
+        };
+    };
+
+    const start = Date.now();
+    const budget = 120;
+    await assert.rejects(
+        () => secureFetch("https://www.instagram.com/share/1", {
+            allowedDomains: ["instagram.com", "www.instagram.com"],
+            maxRedirects: 5,
+            deadlineAt: start + budget,
+            fetchImpl: mockFetchImpl
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+    );
+    const duration = Date.now() - start;
+    // Hop 1 took 80ms. Hop 2 had 40ms remaining, timed out at ~120ms total.
+    assert.ok(duration < 190, `Total duration (${duration}ms) must remain bounded by deadline (${budget}ms)`);
+});
+
+test("Body Deadline: Slow/stalled response body times out and aborts upstream stream", async () => {
+    const slowStream = new PassThrough();
+    let abortCalled = false;
+    const abortFn = () => {
+        abortCalled = true;
+    };
+
+    slowStream.write("partial content");
+
+    const start = Date.now();
+    await assert.rejects(
+        () => readStreamWithLimit(slowStream, 10000, abortFn, {
+            deadlineAt: start + 70
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+    );
+
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 160, `Body read must time out around deadline, took ${elapsed}ms`);
+    assert.equal(abortCalled, true, "Upstream abort must be called on body timeout");
+    assert.equal(slowStream.destroyed, true, "Response stream must be destroyed on body timeout");
+});
+
+test("Body Deadline: Body reads receive only the remaining budget after headers", async () => {
+    const slowStream = new PassThrough();
+    const abortFn = () => {};
+
+    // Simulate 80ms already consumed during header phase
+    const deadlineAt = Date.now() + 140;
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Only ~60ms remains for body read
+    const startRead = Date.now();
+    await assert.rejects(
+        () => readStreamWithLimit(slowStream, 10000, abortFn, {
+            deadlineAt
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "TIMEOUT"
+    );
+
+    const readDuration = Date.now() - startRead;
+    assert.ok(readDuration < 120, `Body read duration (${readDuration}ms) should reflect remaining budget (~60ms)`);
+});
+
+test("Cancellation: External abort during body read halts immediately and returns CLIENT_ABORTED", async () => {
+    const controller = new AbortController();
+    const stream = new PassThrough();
+    let abortCalled = false;
+    const abortFn = () => {
+        abortCalled = true;
+    };
+
+    stream.write("first part");
+
+    const readPromise = readStreamWithLimit(stream, 10000, abortFn, {
+        signal: controller.signal
+    });
+
+    setTimeout(() => {
+        controller.abort();
+    }, 30);
+
+    await assert.rejects(
+        () => readPromise,
+        (err) => err instanceof SecurityHTTPError && err.code === "CLIENT_ABORTED"
+    );
+
+    assert.equal(abortCalled, true, "Upstream abortFn must be invoked on external abort");
+    assert.equal(stream.destroyed, true, "Stream must be destroyed on external abort");
+});
+
+test("Cancellation: External abort during redirect stops chain immediately without next request", async () => {
+    const controller = new AbortController();
+    const requestsMade = [];
+
+    const mockFetchImpl = async (url) => {
+        requestsMade.push(url);
+        controller.abort();
+        return {
+            status: 302,
+            headers: new Map([["location", "https://www.instagram.com/share/2"]])
+        };
+    };
+
+    await assert.rejects(
+        () => secureFetch("https://www.instagram.com/share/1", {
+            allowedDomains: ["instagram.com", "www.instagram.com"],
+            maxRedirects: 3,
+            signal: controller.signal,
+            fetchImpl: mockFetchImpl
+        }),
+        (err) => err instanceof SecurityHTTPError && err.code === "CLIENT_ABORTED"
+    );
+
+    assert.equal(requestsMade.length, 1, "Only first request should have occurred; second hop must NOT start");
 });
