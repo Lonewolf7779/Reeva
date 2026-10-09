@@ -386,6 +386,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
     // If entry is backed by a local merged media file (e.g., YouTube VIDEO_AND_AUDIO)
     if (mediaEntry.localFilePath) {
+        let releaseLease = () => {};
         try {
             const resolvedTempDir = path.resolve(process.env.REEVA_TEMP_DIR || REEVA_TEMP_DIR);
             const resolvedFilePath = path.resolve(mediaEntry.localFilePath);
@@ -402,7 +403,16 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
                 });
             }
 
+            // Acquire active file stream lease before opening or checking file
+            releaseLease = defaultRegistry.acquireFileLease(resolvedFilePath);
+
+            if (abortController.signal.aborted || res.destroyed) {
+                releaseLease();
+                return;
+            }
+
             if (!fs.existsSync(resolvedFilePath)) {
+                releaseLease();
                 logStreamTerminal("error", "MEDIA_NOT_FOUND");
                 return res.status(404).json({
                     error: {
@@ -415,6 +425,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             const stat = fs.statSync(resolvedFilePath);
             if (stat.size > maxMediaSize) {
+                releaseLease();
                 logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
                 return res.status(413).json({
                     error: {
@@ -440,12 +451,21 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             const fileStream = fs.createReadStream(resolvedFilePath);
             activeStream = fileStream;
 
+            // Wire lease release to all termination events
+            fileStream.on("close", releaseLease);
+            fileStream.on("error", releaseLease);
+            res.on("finish", releaseLease);
+            res.on("close", releaseLease);
+            res.on("error", releaseLease);
+            abortController.signal.addEventListener("abort", releaseLease, { once: true });
+
             const meter = new StreamMeter(maxMediaSize, () => {
                 fileStream.destroy();
             });
 
             meter.on("error", () => {
                 fileStream.destroy();
+                releaseLease();
                 logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
                 if (!res.headersSent) {
                     res.status(413).json({
@@ -463,6 +483,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             fileStream.pipe(meter).pipe(res);
             return;
         } catch (err) {
+            releaseLease();
             logStreamTerminal("error", "STREAM_ERROR");
             if (!res.headersSent) {
                 res.status(500).json({
