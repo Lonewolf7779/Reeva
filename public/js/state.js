@@ -16,6 +16,7 @@
         "twitter",
         "pinterest",
         "youtube",
+        "tiktok",
         "generic"
     ]);
 

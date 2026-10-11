@@ -22,6 +22,7 @@ test("Frontend Architecture: Supported platform identifiers match exact backend 
         "twitter",
         "pinterest",
         "youtube",
+        "tiktok",
         "generic"
     ];
 
@@ -40,11 +41,14 @@ test("Frontend Architecture: State container enforces platform validation and de
     assert.strictEqual(state.setPlatform("youtube"), true);
     assert.strictEqual(state.getPlatform(), "youtube");
 
+    assert.strictEqual(state.setPlatform("tiktok"), true);
+    assert.strictEqual(state.getPlatform(), "tiktok");
+
     assert.strictEqual(state.setPlatform("generic"), true);
     assert.strictEqual(state.getPlatform(), "generic");
 
     // Invalid platform rejected, preserves current
-    assert.strictEqual(state.setPlatform("tiktok"), false);
+    assert.strictEqual(state.setPlatform("snapchat"), false);
     assert.strictEqual(state.getPlatform(), "generic");
 
     assert.strictEqual(state.setPlatform(""), false);

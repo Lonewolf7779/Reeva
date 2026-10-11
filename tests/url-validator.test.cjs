@@ -55,12 +55,12 @@ test("Credentials and Port Injection: Rejects userinfo and non-standard ports", 
 });
 
 test("Platform Validation: Allows only explicit supported platforms", () => {
-    const valid = ["instagram", "facebook", "twitter", "x", "pinterest", "youtube", "generic", "more_sites"];
+    const valid = ["instagram", "facebook", "twitter", "x", "pinterest", "youtube", "tiktok", "generic", "more_sites"];
     for (const p of valid) {
         assert.equal(typeof validatePlatform(p), "string");
     }
 
-    const invalid = ["tiktok", "reddit", "linkedin", "snapchat", "telegram", "../../etc", ""];
+    const invalid = ["reddit", "linkedin", "snapchat", "telegram", "../../etc", ""];
     for (const p of invalid) {
         assert.throws(() => validatePlatform(p), ValidationError);
     }

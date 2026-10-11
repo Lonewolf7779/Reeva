@@ -208,7 +208,7 @@ test("API Download Endpoint: Validates parameters, platforms, and domains", asyn
         assert.equal(missingUrlRes.json.error.code, "MISSING_URL");
 
         // Invalid Platform
-        const invalidPlatformRes = await makeRequest(server, "/api/download/tiktok?url=https://instagram.com/p/123");
+        const invalidPlatformRes = await makeRequest(server, "/api/download/snapchat?url=https://instagram.com/p/123");
         assert.equal(invalidPlatformRes.status, 400);
         assert.equal(invalidPlatformRes.json.error.code, "UNSUPPORTED_PLATFORM");
 

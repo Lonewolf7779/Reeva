@@ -1,0 +1,301 @@
+// tests/tiktok-extraction.test.cjs — Deterministic and Isolated Tests for TikTok Extraction Adapter
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const http = require("http");
+const os = require("os");
+const crypto = require("crypto");
+
+const {
+    extractTikTok,
+    parseTikTokMetadata,
+    mapTikTokYtDlpError,
+    resolveTikTokShortUrl
+} = require("../lib/extraction/adapters/tiktok.cjs");
+const { validateExtractionResult } = require("../lib/extraction/result-validator.cjs");
+const { validatePlatform, validateSourceUrl, validateGenericSourceUrl, ValidationError } = require("../lib/url-validator.cjs");
+const { ExtractionError, EXTRACTION_ERROR_CODES } = require("../lib/extraction/types.cjs");
+const { REEVA_TEMP_DIR } = require("../lib/extraction/adapters/youtube.cjs");
+const { MediaRegistry, defaultRegistry } = require("../lib/media-registry.cjs");
+const app = require("../server.cjs");
+
+// ==============================================================================
+// 1. SOURCE URL VALIDATION & REDIRECT RESOLUTION
+// ==============================================================================
+
+test("TikTok Validation: Accepts valid TikTok video URLs", () => {
+    const validUrls = [
+        "https://www.tiktok.com/@username/video/7106594312292453678",
+        "https://tiktok.com/@user.name/video/1234567890123456789",
+        "https://m.tiktok.com/v/7106594312292453678.html",
+        "https://vm.tiktok.com/ZM8ABC123/",
+        "https://vt.tiktok.com/ZS8XYZ456/"
+    ];
+
+    for (const u of validUrls) {
+        const validated = validateSourceUrl(u, "tiktok");
+        assert.ok(validated.startsWith("https://"));
+    }
+});
+
+test("TikTok Validation: Rejects invalid or untrusted source domains", () => {
+    const invalidUrls = [
+        "https://evil-tiktok.com/@user/video/123",
+        "https://tiktok.com.attacker.com/@user/video/123",
+        "http://www.tiktok.com/@user/video/123", // Insecure HTTP
+        "https://user:pass@www.tiktok.com/@user/video/123", // Credentials
+        "https://www.tiktok.com:8080/@user/video/123", // Non-standard port
+        "https://instagram.com/reel/12345"
+    ];
+
+    for (const u of invalidUrls) {
+        assert.throws(() => validateSourceUrl(u, "tiktok"), ValidationError);
+    }
+});
+
+test("TikTok Validation: Generic validator directs TikTok links to specialized downloader", async () => {
+    await assert.rejects(
+        () => validateGenericSourceUrl("https://www.tiktok.com/@user/video/123456789"),
+        (err) => err instanceof ValidationError && err.code === "USE_SPECIALIZED_PLATFORM" && err.message.includes("TikTok")
+    );
+
+    await assert.rejects(
+        () => validateGenericSourceUrl("https://vm.tiktok.com/ZM8ABC123/"),
+        (err) => err instanceof ValidationError && err.code === "USE_SPECIALIZED_PLATFORM" && err.message.includes("TikTok")
+    );
+});
+
+test("TikTok Redirects: Resolves short link under domain boundaries", async () => {
+    const mockFetch = async (url, opts) => {
+        assert.ok(opts.allowedDomains.includes("tiktok.com"));
+        return {
+            finalUrl: "https://www.tiktok.com/@user/video/7106594312292453678",
+            clearTimeout: () => {}
+        };
+    };
+
+    const resolved = await resolveTikTokShortUrl("https://vm.tiktok.com/ZM8ABC123/", { fetchFn: mockFetch });
+    assert.equal(resolved, "https://www.tiktok.com/@user/video/7106594312292453678");
+});
+
+// ==============================================================================
+// 2. METADATA PARSING & ERROR MAPPING
+// ==============================================================================
+
+test("TikTok Parsing: Parses yt-dlp metadata JSON cleanly", () => {
+    const sampleStdout = JSON.stringify({
+        id: "7106594312292453678",
+        title: "Funny dance challenge",
+        fulltitle: "Funny dance challenge #dance",
+        formats: [{ url: "https://v16-webapp-prime.tiktokcdn.com/video.mp4" }]
+    });
+
+    const parsed = parseTikTokMetadata(sampleStdout);
+    assert.equal(parsed.id, "7106594312292453678");
+    assert.equal(parsed.title, "Funny dance challenge");
+});
+
+test("TikTok Parsing: Rejects playlists and collections", () => {
+    const playlistStdout = JSON.stringify({
+        _type: "playlist",
+        id: "user_collection_123"
+    });
+
+    assert.throws(
+        () => parseTikTokMetadata(playlistStdout),
+        (err) => err instanceof ExtractionError && err.code === EXTRACTION_ERROR_CODES.UNSUPPORTED_MEDIA
+    );
+});
+
+test("TikTok Error Mapping: Normalizes bot challenge, timeout, and private video", () => {
+    const botErr = mapTikTokYtDlpError(new Error("Sign in to confirm you're not a bot"));
+    assert.equal(botErr.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+
+    const privErr = mapTikTokYtDlpError(new Error("This video is private"));
+    assert.equal(privErr.code, EXTRACTION_ERROR_CODES.PRIVATE_CONTENT);
+
+    const timeoutErr = mapTikTokYtDlpError(new Error("Connection timed out"));
+    assert.equal(timeoutErr.code, EXTRACTION_ERROR_CODES.PROVIDER_TIMEOUT);
+});
+
+// ==============================================================================
+// 3. DETERMINISTIC EXTRACTION ADAPTER EXECUTION (MOCKED RUNNER)
+// ==============================================================================
+
+test("TikTok Adapter: Successfully extracts and materializes local artifact", async () => {
+    if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+
+    const mockRunner = async ({ command, args }) => {
+        // Find output path in args if downloading
+        const oIndex = args.indexOf("-o");
+        if (oIndex !== -1 && args[oIndex + 1]) {
+            const outPath = args[oIndex + 1];
+            // Simulate yt-dlp writing a 1 MB file
+            fs.writeFileSync(outPath, Buffer.alloc(1024 * 1024));
+        }
+
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+                id: "7106594312292453678",
+                title: "TikTok Test Video"
+            }),
+            stderr: ""
+        };
+    };
+
+    const res = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+        runner: mockRunner
+    });
+
+    try {
+        assert.equal(res.platform, "tiktok");
+        assert.equal(res.type, "video");
+        assert.equal(res.title, "TikTok Test Video");
+        assert.ok(res.localFilePath.startsWith(REEVA_TEMP_DIR));
+        assert.ok(fs.existsSync(res.localFilePath));
+
+        // Validate through central result validator
+        const validated = await validateExtractionResult(res, "tiktok");
+        assert.equal(validated.platform, "tiktok");
+        assert.equal(validated.localFilePath, res.localFilePath);
+    } finally {
+        if (res.localFilePath && fs.existsSync(res.localFilePath)) {
+            try { fs.unlinkSync(res.localFilePath); } catch (_) {}
+        }
+    }
+});
+
+test("TikTok Adapter: Cleans up partial files on runner failure", async () => {
+    if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+
+    let writtenPath = null;
+    const mockFailingRunner = async ({ args }) => {
+        const oIndex = args.indexOf("-o");
+        if (oIndex !== -1 && args[oIndex + 1]) {
+            writtenPath = args[oIndex + 1];
+            fs.writeFileSync(writtenPath, Buffer.from("partial"));
+            return {
+                exitCode: 1,
+                stdout: "",
+                stderr: "ERROR: Download connection reset by peer"
+            };
+        }
+        // Metadata simulation phase succeeds
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({ id: "123", title: "Test" }),
+            stderr: ""
+        };
+    };
+
+    await assert.rejects(
+        () => extractTikTok("https://www.tiktok.com/@user/video/123", { runner: mockFailingRunner }),
+        (err) => err instanceof ExtractionError
+    );
+
+    assert.ok(writtenPath, "File path must have been assigned");
+    assert.equal(fs.existsSync(writtenPath), false, "Partial file must be cleaned up on failure");
+});
+
+test("TikTok Result Validation: Rejects 0-byte output and paths outside REEVA_TEMP_DIR", async () => {
+    if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+
+    const emptyFile = path.join(REEVA_TEMP_DIR, `empty_tt_${Date.now()}.mp4`);
+    fs.writeFileSync(emptyFile, Buffer.alloc(0));
+
+    try {
+        await assert.rejects(
+            () => validateExtractionResult({
+                url: `file://${emptyFile}`,
+                localFilePath: emptyFile,
+                type: "video"
+            }, "tiktok"),
+            (err) => err instanceof ExtractionError && err.message.includes("empty")
+        );
+    } finally {
+        try { fs.unlinkSync(emptyFile); } catch (_) {}
+    }
+
+    const outsideFile = path.resolve(os.tmpdir(), "outside_tt.mp4");
+    fs.writeFileSync(outsideFile, Buffer.alloc(100));
+
+    try {
+        await assert.rejects(
+            () => validateExtractionResult({
+                url: `file://${outsideFile}`,
+                localFilePath: outsideFile,
+                type: "video"
+            }, "tiktok"),
+            (err) => err instanceof ExtractionError && err.message.includes("outside permitted temporary directory")
+        );
+    } finally {
+        try { fs.unlinkSync(outsideFile); } catch (_) {}
+    }
+});
+
+// ==============================================================================
+// 4. FULL HTTP PIPELINE INTEGRATION TEST
+// ==============================================================================
+
+test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and lifecycle cleanup", async () => {
+    const server = http.createServer(app);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+    const port = server.address().port;
+
+    // Create a valid mock artifact in REEVA_TEMP_DIR
+    const tempFile = path.join(REEVA_TEMP_DIR, `reeva_tt_http_${Date.now()}.mp4`);
+    fs.writeFileSync(tempFile, Buffer.from("TIKTOK_VIDEO_STREAM_BYTES"));
+
+    try {
+        // Register in defaultRegistry as tiktok platform with localFilePath
+        const registered = defaultRegistry.registerMedia({
+            upstreamUrl: `file://${tempFile}`,
+            platform: "tiktok",
+            type: "video",
+            title: "TikTok Dance Clip",
+            localFilePath: tempFile
+        });
+
+        // Request stream through HTTP endpoint
+        const dlRes = await new Promise((resolve, reject) => {
+            const req = http.get({
+                host: "127.0.0.1",
+                port,
+                path: `/api/media/${registered.id}?download=1`
+            }, (res) => {
+                const chunks = [];
+                res.on("data", c => chunks.push(c));
+                res.on("end", () => {
+                    resolve({
+                        statusCode: res.statusCode,
+                        headers: res.headers,
+                        body: Buffer.concat(chunks)
+                    });
+                });
+            });
+            req.on("error", reject);
+        });
+
+        assert.equal(dlRes.statusCode, 200);
+        assert.equal(dlRes.headers["content-type"], "video/mp4");
+        assert.equal(dlRes.headers["content-disposition"], 'attachment; filename="reeva_tiktok.mp4"');
+        assert.equal(dlRes.body.toString("utf8"), "TIKTOK_VIDEO_STREAM_BYTES");
+
+        // Verify active-lease protection and deletion
+        assert.equal(fs.existsSync(tempFile), true);
+        defaultRegistry.deleteMedia(registered.id);
+        // Give 50ms for Windows file handle release
+        await new Promise(r => setTimeout(r, 60));
+        assert.equal(fs.existsSync(tempFile), false);
+
+    } finally {
+        if (fs.existsSync(tempFile)) {
+            try { fs.unlinkSync(tempFile); } catch (_) {}
+        }
+        server.close();
+    }
+});
