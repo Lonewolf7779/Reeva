@@ -325,7 +325,7 @@ test("Subprocess Security: User cannot inject additional flags into yt-dlp", asy
 // 5. LOCAL FILE ARTIFACT & RESULT VALIDATION TESTS
 // ==============================================================================
 
-test("Local File Security: Central result validation verifies file in REEVA_TEMP_DIR and enforces bounds", () => {
+test("Local File Security: Central result validation verifies file in REEVA_TEMP_DIR and enforces bounds", async () => {
     if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
 
     const tempFile = path.join(REEVA_TEMP_DIR, `test_val_${crypto.randomBytes(8).toString("hex")}.mp4`);
@@ -340,7 +340,7 @@ test("Local File Security: Central result validation verifies file in REEVA_TEMP
             mode: "VIDEO_AND_AUDIO"
         };
 
-        const validated = validateExtractionResult(rawResult, "generic");
+        const validated = await validateExtractionResult(rawResult, "generic");
         assert.equal(validated.platform, "generic");
         assert.equal(validated.localFilePath, tempFile);
         assert.equal(validated.type, "video");
@@ -350,7 +350,7 @@ test("Local File Security: Central result validation verifies file in REEVA_TEMP
     }
 });
 
-test("Local File Security: Rejects traversal attempts outside REEVA_TEMP_DIR", () => {
+test("Local File Security: Rejects traversal attempts outside REEVA_TEMP_DIR", async () => {
     const outsideFile = path.resolve(os.tmpdir(), "outside_reeva.mp4");
     fs.writeFileSync(outsideFile, Buffer.alloc(1024));
 
@@ -362,7 +362,7 @@ test("Local File Security: Rejects traversal attempts outside REEVA_TEMP_DIR", (
             title: "Escaped Video"
         };
 
-        assert.throws(
+        await assert.rejects(
             () => validateExtractionResult(maliciousResult, "generic"),
             (err) => err instanceof ExtractionError && err.message.includes("outside permitted temporary directory")
         );
@@ -371,7 +371,7 @@ test("Local File Security: Rejects traversal attempts outside REEVA_TEMP_DIR", (
     }
 });
 
-test("Local File Security: Rejects non-existent local files", () => {
+test("Local File Security: Rejects non-existent local files", async () => {
     const nonExistent = path.join(REEVA_TEMP_DIR, "ghost_video.mp4");
     const badResult = {
         url: `file://${nonExistent}`,
@@ -380,13 +380,13 @@ test("Local File Security: Rejects non-existent local files", () => {
         title: "Missing"
     };
 
-    assert.throws(
+    await assert.rejects(
         () => validateExtractionResult(badResult, "generic"),
         (err) => err instanceof ExtractionError && err.message.includes("does not exist on disk")
     );
 });
 
-test("Local File Security: Rejects files exceeding 100 MB", () => {
+test("Local File Security: Rejects files exceeding 100 MB", async () => {
     if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
     const bigFile = path.join(REEVA_TEMP_DIR, `test_big_${crypto.randomBytes(8).toString("hex")}.mp4`);
 
@@ -403,7 +403,7 @@ test("Local File Security: Rejects files exceeding 100 MB", () => {
             title: "Over 100MB"
         };
 
-        assert.throws(
+        await assert.rejects(
             () => validateExtractionResult(bigResult, "generic"),
             (err) => err instanceof ExtractionError && err.statusCode === 413
         );
@@ -412,14 +412,14 @@ test("Local File Security: Rejects files exceeding 100 MB", () => {
     }
 });
 
-test("Local File Security: Rejects standalone images in generic mode", () => {
+test("Local File Security: Rejects standalone images in generic mode", async () => {
     const imageResult = {
         url: "https://example.com/image.jpg",
         type: "image",
         title: "Image Post"
     };
 
-    assert.throws(
+    await assert.rejects(
         () => validateExtractionResult(imageResult, "generic"),
         (err) => err instanceof ExtractionError && err.code === EXTRACTION_ERROR_CODES.UNSUPPORTED_MEDIA
     );
@@ -626,6 +626,111 @@ test("API Generic Endpoint: Streams local file artifact cleanly with headers and
     } finally {
         try { fs.unlinkSync(tempFile); } catch (_) {}
         server.close();
+    }
+});
+
+// ==============================================================================
+// 7. ASYNC VALIDATION TARGETED TESTS (PHASE 3.18D-3-FIX2)
+// ==============================================================================
+
+test("Async Validation: validateExtractionResult handles ENOENT and ENOTDIR with EXTRACTION_FAILED", async () => {
+    // 1. ENOENT
+    const nonExistent = path.join(REEVA_TEMP_DIR, `ghost_${Date.now()}.mp4`);
+    await assert.rejects(
+        () => validateExtractionResult({
+            url: `file://${nonExistent}`,
+            localFilePath: nonExistent,
+            type: "video"
+        }, "generic"),
+        (err) => {
+            assert.ok(err instanceof ExtractionError);
+            assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
+            assert.equal(err.message, "Local media artifact does not exist on disk.");
+            return true;
+        }
+    );
+
+    // 2. ENOTDIR (simulated path through a non-directory)
+    const originalStat = fs.promises.stat;
+    fs.promises.stat = async (p) => {
+        if (p === nonExistent) {
+            const err = new Error("Not a directory");
+            err.code = "ENOTDIR";
+            throw err;
+        }
+        return originalStat.call(fs.promises, p);
+    };
+
+    try {
+        await assert.rejects(
+            () => validateExtractionResult({
+                url: `file://${nonExistent}`,
+                localFilePath: nonExistent,
+                type: "video"
+            }, "generic"),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
+                assert.equal(err.message, "Local media artifact does not exist on disk.");
+                return true;
+            }
+        );
+    } finally {
+        fs.promises.stat = originalStat;
+    }
+});
+
+test("Async Validation: validateExtractionResult rethrows unexpected filesystem errors", async () => {
+    const testFile = path.join(REEVA_TEMP_DIR, `io_err_${Date.now()}.mp4`);
+    const originalStat = fs.promises.stat;
+    fs.promises.stat = async (p) => {
+        if (p === testFile) {
+            const err = new Error("Simulated disk I/O error");
+            err.code = "EIO";
+            throw err;
+        }
+        return originalStat.call(fs.promises, p);
+    };
+
+    try {
+        await assert.rejects(
+            () => validateExtractionResult({
+                url: `file://${testFile}`,
+                localFilePath: testFile,
+                type: "video"
+            }, "generic"),
+            (err) => {
+                assert.equal(err.code, "EIO");
+                assert.equal(err.message, "Simulated disk I/O error");
+                return true;
+            }
+        );
+    } finally {
+        fs.promises.stat = originalStat;
+    }
+});
+
+test("Async Validation: validateExtractionResult rejects 0-byte empty files", async () => {
+    if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    const emptyFile = path.join(REEVA_TEMP_DIR, `empty_${Date.now()}.mp4`);
+    fs.writeFileSync(emptyFile, Buffer.alloc(0));
+
+    try {
+        await assert.rejects(
+            () => validateExtractionResult({
+                url: `file://${emptyFile}`,
+                localFilePath: emptyFile,
+                type: "video"
+            }, "generic"),
+            (err) => {
+                assert.ok(err instanceof ExtractionError);
+                assert.equal(err.code, EXTRACTION_ERROR_CODES.EXTRACTION_FAILED);
+                assert.equal(err.message, "Generated media artifact was empty.");
+                return true;
+            }
+        );
+    } finally {
+        try { fs.unlinkSync(emptyFile); } catch (_) {}
     }
 });
 

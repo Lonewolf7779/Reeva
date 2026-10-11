@@ -232,7 +232,7 @@ test("Instagram Integration: Primary crawler HTML extraction maps og:video and t
     assert.equal(result.type, "video");
     assert.equal(result.title, "Awesome Public Reel");
 
-    const validated = validateExtractionResult(result, "instagram");
+    const validated = await validateExtractionResult(result, "instagram");
     assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/primary_reel.mp4");
 });
 
@@ -413,7 +413,7 @@ test("Instagram Integration: Secondary provider maps media_details output when p
     assert.equal(result.type, "video");
     assert.equal(result.title, "Awesome Reel #test");
 
-    const validated = validateExtractionResult(result, "instagram");
+    const validated = await validateExtractionResult(result, "instagram");
     assert.equal(validated.url, "https://scontent.cdninstagram.com/v/t50/reel_from_media_details.mp4");
 });
 
@@ -560,7 +560,7 @@ test("Twitter Integration: Successful video response selects highest bitrate MP4
     assert.equal(result.type, "video");
     assert.equal(result.title, "Entering Twitter HQ – let that sink in!");
 
-    const validated = validateExtractionResult(result, "twitter");
+    const validated = await validateExtractionResult(result, "twitter");
     assert.equal(validated.url, "https://video.twimg.com/example-high.mp4");
     assert.equal(validated.type, "video");
 });
@@ -610,7 +610,7 @@ test("Twitter Integration: Photo extraction works when no video is present", asy
     assert.equal(result.type, "image");
     assert.equal(result.title, "Beautiful sunset photo");
 
-    const validated = validateExtractionResult(result, "twitter");
+    const validated = await validateExtractionResult(result, "twitter");
     assert.equal(validated.url, "https://pbs.twimg.com/media/sunset.jpg");
     assert.equal(validated.type, "image");
 });
@@ -872,7 +872,7 @@ test("YouTube Integration: VIDEO_ONLY mode extracts direct stream URL and enforc
     assert.equal(result.title, "Video Only Test Title");
     assert.equal(result.mode, "VIDEO_ONLY");
 
-    const validated = validateExtractionResult(result, "youtube");
+    const validated = await validateExtractionResult(result, "youtube");
     assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?id=123");
     assert.equal(validated.type, "video");
     assert.equal(validated.mode, "VIDEO_ONLY");
@@ -906,7 +906,7 @@ test("YouTube Integration: AUDIO_ONLY mode extracts direct audio stream URL and 
     assert.equal(result.title, "Audio Only Test Title");
     assert.equal(result.mode, "AUDIO_ONLY");
 
-    const validated = validateExtractionResult(result, "youtube");
+    const validated = await validateExtractionResult(result, "youtube");
     assert.equal(validated.url, "https://rr2---sn-xyz.googlevideo.com/videoplayback?id=456");
     assert.equal(validated.type, "audio");
     assert.equal(validated.mode, "AUDIO_ONLY");
@@ -949,7 +949,7 @@ test("YouTube Integration: VIDEO_AND_AUDIO mode merges to local file artifact an
     assert.ok(result.localFilePath);
     assert.ok(fs.existsSync(result.localFilePath));
 
-    const validated = validateExtractionResult(result, "youtube");
+    const validated = await validateExtractionResult(result, "youtube");
     assert.equal(validated.url, "https://rr1---sn-abc.googlevideo.com/videoplayback?video=1");
     assert.equal(validated.localFilePath, result.localFilePath);
     assert.equal(validated.mode, "VIDEO_AND_AUDIO");
@@ -1271,7 +1271,7 @@ test("Pinterest Integration: Direct HTML extraction works with deterministic fix
     assert.equal(result.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
     assert.equal(result.type, "image");
 
-    const validated = validateExtractionResult(result, "pinterest");
+    const validated = await validateExtractionResult(result, "pinterest");
     assert.equal(validated.url, "https://i.pinimg.com/736x/test_pin.jpg?token=abc&width=736");
 });
 
@@ -1466,7 +1466,7 @@ test("Facebook Integration: HTML with data-video-url extracts video URL", async 
     assert.equal(result.type, "video");
     assert.equal(result.title, "Facebook Watch Video");
 
-    const validated = validateExtractionResult(result, "facebook");
+    const validated = await validateExtractionResult(result, "facebook");
     assert.equal(validated.url, "https://video.famd5-3.fna.fbcdn.net/v/t42/data_video.mp4?token=abc&id=123");
 });
 
@@ -1489,7 +1489,7 @@ test("Facebook Integration: Standard og:video meta tag extracts video URL and de
     assert.equal(result.type, "video");
     assert.equal(result.title, "A Great Facebook Reel");
 
-    const validated = validateExtractionResult(result, "facebook");
+    const validated = await validateExtractionResult(result, "facebook");
     assert.equal(validated.url, "https://video.xx.fbcdn.net/v/t42/reel.mp4?token=abc&sig=123");
 });
 
@@ -1909,8 +1909,8 @@ test("Timeout Test E: Late rejection on non-cancellable promise after timeout do
 
 // ==================== RESULT VALIDATOR TESTS ====================
 
-test("Result Validator: Rejects unsupported media types", () => {
-    assert.throws(
+test("Result Validator: Rejects unsupported media types", async () => {
+    await assert.rejects(
         () => validateExtractionResult({
             url: "https://scontent.cdninstagram.com/doc.pdf",
             type: "pdf"
@@ -1923,8 +1923,8 @@ test("Result Validator: Rejects unsupported media types", () => {
     );
 });
 
-test("Result Validator: Accepts audio media type", () => {
-    const validated = validateExtractionResult({
+test("Result Validator: Accepts audio media type", async () => {
+    const validated = await validateExtractionResult({
         url: "https://rr1---sn-abc.googlevideo.com/audio.m4a",
         type: "audio",
         title: "Test Audio"
@@ -1934,9 +1934,9 @@ test("Result Validator: Accepts audio media type", () => {
     assert.equal(validated.platform, "youtube");
 });
 
-test("Result Validator: Truncates long titles to 200 chars", () => {
+test("Result Validator: Truncates long titles to 200 chars", async () => {
     const longTitle = "A".repeat(500);
-    const validated = validateExtractionResult({
+    const validated = await validateExtractionResult({
         url: "https://scontent.cdninstagram.com/v/t50/video.mp4",
         type: "video",
         title: longTitle
