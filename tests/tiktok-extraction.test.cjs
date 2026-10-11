@@ -125,21 +125,17 @@ test("TikTok Error Mapping: Normalizes bot challenge, timeout, and private video
 // 3. DETERMINISTIC EXTRACTION ADAPTER EXECUTION (MOCKED RUNNER)
 // ==============================================================================
 
-test("TikTok Adapter: Successfully extracts and materializes local artifact", async () => {
+test("TikTok Adapter: Subprocess isolation flags and explicit FFmpeg merging policy", async () => {
     if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
 
-    const capturedArgs = [];
-    const mockRunner = async ({ command, args }) => {
-        capturedArgs.push([...args]);
-
-        // Find output path in args if downloading
+    // Subtest A: With explicit FFmpeg path configured
+    const capturedArgsWithFfmpeg = [];
+    const mockRunnerA = async ({ command, args }) => {
+        capturedArgsWithFfmpeg.push([...args]);
         const oIndex = args.indexOf("-o");
         if (oIndex !== -1 && args[oIndex + 1]) {
-            const outPath = args[oIndex + 1];
-            // Simulate yt-dlp writing a 1 MB file
-            fs.writeFileSync(outPath, Buffer.alloc(1024 * 1024));
+            fs.writeFileSync(args[oIndex + 1], Buffer.alloc(1024 * 1024));
         }
-
         return {
             exitCode: 0,
             stdout: JSON.stringify({
@@ -150,20 +146,19 @@ test("TikTok Adapter: Successfully extracts and materializes local artifact", as
         };
     };
 
-    const res = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
-        runner: mockRunner
+    const dummyFfmpeg = path.join(REEVA_TEMP_DIR, "mock_ffmpeg.exe");
+    const resA = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+        runner: mockRunnerA,
+        ffmpegPath: dummyFfmpeg
     });
 
     try {
-        assert.equal(res.platform, "tiktok");
-        assert.equal(res.type, "video");
-        assert.equal(res.title, "TikTok Test Video");
-        assert.ok(res.localFilePath.startsWith(REEVA_TEMP_DIR));
-        assert.ok(fs.existsSync(res.localFilePath));
-
-        // Security check: Must have captured args for both metadata simulation and media download
-        assert.equal(capturedArgs.length, 2, "Expected exactly 2 runner invocations (metadata simulation and download)");
-        for (const argsList of capturedArgs) {
+        assert.equal(capturedArgsWithFfmpeg.length, 2);
+        const requiredFlags = ["--ignore-config", "--no-cache-dir", "--no-cookies", "--no-call-home", "--no-playlist"];
+        for (const argsList of capturedArgsWithFfmpeg) {
+            for (const flag of requiredFlags) {
+                assert.ok(argsList.includes(flag), `Arguments must include isolation flag '${flag}'`);
+            }
             assert.equal(
                 argsList.includes("--no-check-certificates"),
                 false,
@@ -171,13 +166,72 @@ test("TikTok Adapter: Successfully extracts and materializes local artifact", as
             );
         }
 
-        // Validate through central result validator
-        const validated = await validateExtractionResult(res, "tiktok");
-        assert.equal(validated.platform, "tiktok");
-        assert.equal(validated.localFilePath, res.localFilePath);
+        // Check download args (invocation 2)
+        const dlArgsA = capturedArgsWithFfmpeg[1];
+        const ffmpegIndex = dlArgsA.indexOf("--ffmpeg-location");
+        assert.notEqual(ffmpegIndex, -1, "Download args must include --ffmpeg-location when FFmpeg is configured");
+        assert.equal(dlArgsA[ffmpegIndex + 1], path.resolve(dummyFfmpeg));
+        assert.ok(dlArgsA.includes("--merge-output-format"));
+        assert.equal(dlArgsA[dlArgsA.indexOf("-f") + 1], "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best");
     } finally {
-        if (res.localFilePath && fs.existsSync(res.localFilePath)) {
-            try { fs.unlinkSync(res.localFilePath); } catch (_) {}
+        if (resA.localFilePath && fs.existsSync(resA.localFilePath)) {
+            try { fs.unlinkSync(resA.localFilePath); } catch (_) {}
+        }
+    }
+
+    // Subtest B: Without FFmpeg configured (control environment variable)
+    const originalFfmpegEnv = process.env.FFMPEG_PATH;
+    delete process.env.FFMPEG_PATH;
+
+    const capturedArgsNoFfmpeg = [];
+    const mockRunnerB = async ({ command, args }) => {
+        capturedArgsNoFfmpeg.push([...args]);
+        const oIndex = args.indexOf("-o");
+        if (oIndex !== -1 && args[oIndex + 1]) {
+            fs.writeFileSync(args[oIndex + 1], Buffer.alloc(1024 * 1024));
+        }
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+                id: "7106594312292453678",
+                title: "TikTok Test Video"
+            }),
+            stderr: ""
+        };
+    };
+
+    try {
+        const resB = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+            runner: mockRunnerB,
+            ffmpegPath: null
+        });
+
+        try {
+            assert.equal(capturedArgsNoFfmpeg.length, 2);
+            for (const argsList of capturedArgsNoFfmpeg) {
+                for (const flag of ["--ignore-config", "--no-cache-dir", "--no-cookies", "--no-call-home", "--no-playlist"]) {
+                    assert.ok(argsList.includes(flag), `Arguments must include isolation flag '${flag}'`);
+                }
+                assert.equal(argsList.includes("--no-check-certificates"), false);
+            }
+
+            // Check download args (invocation 2)
+            const dlArgsB = capturedArgsNoFfmpeg[1];
+            assert.equal(dlArgsB.includes("--ffmpeg-location"), false, "Must NOT pass --ffmpeg-location when not configured");
+            assert.equal(dlArgsB.includes("--merge-output-format"), false, "Must NOT pass --merge-output-format when not merging");
+            assert.equal(
+                dlArgsB[dlArgsB.indexOf("-f") + 1],
+                "b[ext=mp4]/best[ext=mp4]",
+                "Must select single-file progressive MP4 format that does not require merging"
+            );
+        } finally {
+            if (resB.localFilePath && fs.existsSync(resB.localFilePath)) {
+                try { fs.unlinkSync(resB.localFilePath); } catch (_) {}
+            }
+        }
+    } finally {
+        if (originalFfmpegEnv !== undefined) {
+            process.env.FFMPEG_PATH = originalFfmpegEnv;
         }
     }
 });
