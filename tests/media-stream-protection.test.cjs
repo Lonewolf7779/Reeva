@@ -462,11 +462,23 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         localFilePath: testFile
     });
 
-    const server = http.createServer(app);
+    let notifyServerDisconnected;
+    const serverDisconnected = new Promise((resolve) => {
+        notifyServerDisconnected = resolve;
+    });
+
+    const server = http.createServer((req, res) => {
+        req.on("close", () => {
+            if (notifyServerDisconnected) notifyServerDisconnected();
+        });
+        app(req, res);
+    });
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
     const originalStat = fs.promises.stat;
+    const originalCreateReadStream = fs.createReadStream;
+
     let resumeStat;
     const statGate = new Promise((resolve) => {
         resumeStat = resolve;
@@ -476,12 +488,25 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         notifyStatStarted = resolve;
     });
 
+    let readStreamCreatedForTestFile = false;
+
+    let statCount = 0;
     fs.promises.stat = async (targetPath) => {
         if (path.resolve(targetPath) === path.resolve(testFile)) {
-            notifyStatStarted();
-            await statGate;
+            statCount++;
+            if (statCount === 1) {
+                notifyStatStarted();
+                await statGate;
+            }
         }
         return originalStat.call(fs.promises, targetPath);
+    };
+
+    fs.createReadStream = function (targetPath, options) {
+        if (typeof targetPath === "string" && path.resolve(targetPath) === path.resolve(testFile)) {
+            readStreamCreatedForTestFile = true;
+        }
+        return originalCreateReadStream.call(fs, targetPath, options);
     };
 
     try {
@@ -490,23 +515,130 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
             signal: controller.signal
         }).catch(() => {}); // Catch client-side abort rejection
 
-        // Wait until server has acquired lease and entered async stat
+        // 1. Wait until server has acquired lease and entered async stat
         await statStarted;
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 1, "Lease must be held while stat is pending");
 
-        // Client aborts while stat is still pending
+        // 2. Client disconnects before the stat operation completes
         controller.abort();
+        await serverDisconnected; // Deterministic synchronization: wait until disconnect reached the server
 
-        // Release the stat pause to let server proceed
+        // 3. The stat operation is subsequently allowed to complete
         resumeStat();
         await fetchPromise;
 
-        // Wait brief tick for server abort handler to settle
-        await new Promise((r) => setTimeout(r, 80));
+        // Wait brief tick for server execution loop to process post-stat logic
+        await new Promise((r) => setTimeout(r, 60));
 
-        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released after aborted stat");
+        // 4. fs.createReadStream() is NOT called for that media file
+        assert.strictEqual(readStreamCreatedForTestFile, false, "createReadStream must NOT be called for aborted request");
+
+        // 5. The active-reader lease returns to zero
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must return to 0 after aborted stat");
     } finally {
+        // 6. The filesystem mocks are restored in finally blocks
         fs.promises.stat = originalStat;
+        fs.createReadStream = originalCreateReadStream;
+        if (resumeStat) resumeStat();
+        server.close();
+        defaultRegistry.deleteMedia(reg.id);
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});
+
+test("Media Stream Protection (G5): Client abort while async stat is pending followed by stat error releases lease without opening stream or unhandled exception", async () => {
+    ensureTempDir();
+    const testFile = path.join(REEVA_TEMP_DIR, `test_abort_stat_err_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(1024, "E"));
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/abort-stat-err.mp4",
+        platform: "youtube",
+        localFilePath: testFile
+    });
+
+    let notifyServerDisconnected;
+    const serverDisconnected = new Promise((resolve) => {
+        notifyServerDisconnected = resolve;
+    });
+
+    const server = http.createServer((req, res) => {
+        req.on("close", () => {
+            if (notifyServerDisconnected) notifyServerDisconnected();
+        });
+        app(req, res);
+    });
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const originalStat = fs.promises.stat;
+    const originalCreateReadStream = fs.createReadStream;
+
+    let resumeStat;
+    const statGate = new Promise((resolve) => {
+        resumeStat = resolve;
+    });
+    let notifyStatStarted;
+    const statStarted = new Promise((resolve) => {
+        notifyStatStarted = resolve;
+    });
+
+    let readStreamCreatedForTestFile = false;
+
+    let statErrCount = 0;
+    fs.promises.stat = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(testFile)) {
+            statErrCount++;
+            if (statErrCount === 1) {
+                notifyStatStarted();
+                await statGate;
+                const err = new Error("Simulated I/O failure during cancelled stat");
+                err.code = "EIO";
+                throw err;
+            }
+        }
+        return originalStat.call(fs.promises, targetPath);
+    };
+
+    fs.createReadStream = function (targetPath, options) {
+        if (typeof targetPath === "string" && path.resolve(targetPath) === path.resolve(testFile)) {
+            readStreamCreatedForTestFile = true;
+        }
+        return originalCreateReadStream.call(fs, targetPath, options);
+    };
+
+    try {
+        const controller = new AbortController();
+        const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            signal: controller.signal
+        }).catch(() => {}); // Catch client-side abort rejection
+
+        // 1. Wait until server has acquired lease and entered async stat
+        await statStarted;
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 1, "Lease must be held while stat is pending");
+
+        // 2. Client disconnects before the stat operation completes
+        controller.abort();
+        await serverDisconnected; // Deterministic synchronization: wait until disconnect reached the server
+
+        // 3. The stat operation is allowed to complete (with error)
+        resumeStat();
+        await fetchPromise;
+
+        // Wait brief tick for server execution loop to process catch block
+        await new Promise((r) => setTimeout(r, 60));
+
+        // 4. fs.createReadStream() is NOT called for that media file
+        assert.strictEqual(readStreamCreatedForTestFile, false, "createReadStream must NOT be called when stat fails after abort");
+
+        // 5. The active-reader lease returns to zero
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must return to 0 after aborted stat error");
+    } finally {
+        // 6. The filesystem mocks are restored in finally blocks
+        fs.promises.stat = originalStat;
+        fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
         server.close();
         defaultRegistry.deleteMedia(reg.id);

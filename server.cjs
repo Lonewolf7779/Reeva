@@ -432,6 +432,10 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             try {
                 stat = await fs.promises.stat(resolvedFilePath);
             } catch (err) {
+                if (abortController.signal.aborted || res.destroyed) {
+                    releaseLease();
+                    return;
+                }
                 if (err.code === "ENOENT" || err.code === "ENOTDIR") {
                     releaseLease();
                     logStreamTerminal("error", "MEDIA_NOT_FOUND");
