@@ -168,7 +168,7 @@ test("Media Stream Protection: Multiple readers keep file alive until last lease
 // TEST D: STALE-FILE CLEANUP DURING ACTIVE STREAMING
 // ==============================================================================
 
-test("Media Stream Protection: cleanStaleTempFiles skips files with active leases", () => {
+test("Media Stream Protection: cleanStaleTempFiles skips files with active leases", async () => {
     ensureTempDir();
     const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_stale_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
     fs.writeFileSync(staleFile, "stale-video-content");
@@ -183,7 +183,7 @@ test("Media Stream Protection: cleanStaleTempFiles skips files with active lease
 
     try {
         // Run stale cleanup with 15 min threshold
-        cleanStaleTempFiles(15 * 60 * 1000);
+        await cleanStaleTempFiles(15 * 60 * 1000);
 
         // Active file must be preserved!
         assert.strictEqual(fs.existsSync(staleFile), true, "Active leased file must not be removed by cleanStaleTempFiles");

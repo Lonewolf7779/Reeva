@@ -31,9 +31,15 @@ const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapte
 const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
 
 // Clean stale temporary media artifacts on server startup
-cleanStaleTempFiles();
+cleanStaleTempFiles().catch((err) => {
+    logger.error({ message: `Error cleaning temporary files on startup: ${err.message}` });
+});
 // Periodic sweep of stale temporary artifacts every 15 minutes
-const staleCleanupInterval = setInterval(() => cleanStaleTempFiles(), 15 * 60 * 1000);
+const staleCleanupInterval = setInterval(() => {
+    cleanStaleTempFiles().catch((err) => {
+        logger.error({ message: `Error cleaning temporary files during periodic sweep: ${err.message}` });
+    });
+}, 15 * 60 * 1000);
 if (staleCleanupInterval && staleCleanupInterval.unref) {
     staleCleanupInterval.unref();
 }
@@ -881,7 +887,7 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
         } catch (_) {}
 
         try {
-            cleanStaleTempFiles();
+            await cleanStaleTempFiles();
         } catch (err) {
             logger.error({ message: `Error cleaning temporary files during shutdown: ${err.message}` });
         }

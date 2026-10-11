@@ -292,7 +292,7 @@ test("Subprocess Security: defaultCommandRunner aborts on AbortSignal and termin
     assert.ok(elapsed < 2000, `Process must be terminated immediately upon abort (elapsed: ${elapsed}ms)`);
 });
 
-test("Disk Security: cleanStaleTempFiles unlinks old artifacts and preserves recent ones", () => {
+test("Disk Security: cleanStaleTempFiles unlinks old artifacts and preserves recent ones", async () => {
     const fs = require("fs");
     const path = require("path");
     const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
@@ -311,7 +311,7 @@ test("Disk Security: cleanStaleTempFiles unlinks old artifacts and preserves rec
     const oneHourAgo = (Date.now() - 3600 * 1000) / 1000;
     fs.utimesSync(oldFile, oneHourAgo, oneHourAgo);
 
-    const removed = cleanStaleTempFiles(15 * 60 * 1000); // 15 min max age
+    const removed = await cleanStaleTempFiles(15 * 60 * 1000); // 15 min max age
     assert.ok(removed >= 1, "At least 1 old file should be removed");
     assert.equal(fs.existsSync(oldFile), false, "Old file must be deleted");
     assert.equal(fs.existsSync(recentFile), true, "Recent file must be preserved");
