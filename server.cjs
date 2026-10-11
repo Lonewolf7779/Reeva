@@ -44,7 +44,7 @@ if (staleCleanupInterval && staleCleanupInterval.unref) {
     staleCleanupInterval.unref();
 }
 
-const { validateServerConfig, ConfigError } = require("./lib/config.cjs");
+const { validateServerConfig, validateProductionPreflight, ConfigError } = require("./lib/config.cjs");
 
 // Validate server configuration fail-fast on startup
 const serverConfig = validateServerConfig(process.env);
@@ -52,6 +52,7 @@ const PORT = serverConfig.port;
 
 // Server lifecycle tracking state
 let isShuttingDown = false;
+let isPreflightComplete = false;
 let activeServer = null;
 let shutdownPromise = null;
 const activeExtractionControllers = new Set();
@@ -118,6 +119,12 @@ app.get("/ready", (req, res) => {
         return res.status(503).json({
             status: "shutting_down",
             message: "Server is shutting down and not accepting new traffic."
+        });
+    }
+    if (process.env.NODE_ENV === "production" && !isPreflightComplete) {
+        return res.status(503).json({
+            status: "initializing",
+            message: "Server production preflight has not yet completed."
         });
     }
     return res.status(200).json({
@@ -931,20 +938,48 @@ app.gracefulShutdown = gracefulShutdown;
 app.getActiveExtractionControllers = () => activeExtractionControllers;
 app.getActiveStreamControllers = () => activeStreamControllers;
 app.getIsShuttingDown = () => isShuttingDown;
+app.getIsPreflightComplete = () => isPreflightComplete;
+app.setIsPreflightComplete = (val) => { isPreflightComplete = Boolean(val); };
 app.resetShutdownState = () => {
     isShuttingDown = false;
+    isPreflightComplete = false;
     shutdownPromise = null;
     activeExtractionControllers.clear();
     activeStreamControllers.clear();
 };
 
+/**
+ * Starts the HTTP server after completing the production preflight.
+ *
+ * @param {number} [port=PORT]
+ * @param {object} [options={}]
+ * @returns {Promise<import("http").Server>}
+ */
+async function startServer(port = PORT, options = {}) {
+    await validateProductionPreflight(process.env, options);
+    isPreflightComplete = true;
+
+    return new Promise((resolve, reject) => {
+        const server = app.listen(port, () => {
+            activeServer = server;
+            logger.info({
+                message: `Reeva backend is live on port ${port} [NODE_ENV=${process.env.NODE_ENV || "development"}]`
+            });
+            resolve(server);
+        });
+        server.on("error", reject);
+    });
+}
+
+app.startServer = startServer;
+
 // ================== SERVER LIFECYCLE ==================
 if (require.main === module) {
-    activeServer = app.listen(PORT, () => {
-        logger.info({
-            message: `Reeva backend is live on port ${PORT} [NODE_ENV=${process.env.NODE_ENV || "development"}]`
+    startServer(PORT)
+        .catch((err) => {
+            logger.error({ message: `Fatal startup preflight failure: ${err.message}` });
+            process.exit(1);
         });
-    });
 
     const handleSignal = (sig) => {
         logger.info({ message: `Received ${sig}. Starting graceful shutdown...` });

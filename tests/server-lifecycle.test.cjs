@@ -163,6 +163,40 @@ test("GET /ready: Returns 200 status ready when healthy", async () => {
     }
 });
 
+test("GET /ready: In production mode, returns 503 until preflight completes", async () => {
+    app.resetShutdownState();
+    const origNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+        // Preflight not marked complete yet
+        app.setIsPreflightComplete(false);
+        const res1 = await fetch(`http://127.0.0.1:${port}/ready`);
+        assert.strictEqual(res1.status, 503);
+        const data1 = await res1.json();
+        assert.strictEqual(data1.status, "initializing");
+
+        // Mark preflight complete
+        app.setIsPreflightComplete(true);
+        const res2 = await fetch(`http://127.0.0.1:${port}/ready`);
+        assert.strictEqual(res2.status, 200);
+        const data2 = await res2.json();
+        assert.strictEqual(data2.status, "ready");
+    } finally {
+        if (origNodeEnv !== undefined) {
+            process.env.NODE_ENV = origNodeEnv;
+        } else {
+            delete process.env.NODE_ENV;
+        }
+        app.resetShutdownState();
+        server.close();
+    }
+});
+
 test("GET /ready: Returns 503 during graceful shutdown", async () => {
     app.resetShutdownState();
     const server = http.createServer(app);
