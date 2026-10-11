@@ -128,7 +128,10 @@ test("TikTok Error Mapping: Normalizes bot challenge, timeout, and private video
 test("TikTok Adapter: Successfully extracts and materializes local artifact", async () => {
     if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
 
+    const capturedArgs = [];
     const mockRunner = async ({ command, args }) => {
+        capturedArgs.push([...args]);
+
         // Find output path in args if downloading
         const oIndex = args.indexOf("-o");
         if (oIndex !== -1 && args[oIndex + 1]) {
@@ -157,6 +160,16 @@ test("TikTok Adapter: Successfully extracts and materializes local artifact", as
         assert.equal(res.title, "TikTok Test Video");
         assert.ok(res.localFilePath.startsWith(REEVA_TEMP_DIR));
         assert.ok(fs.existsSync(res.localFilePath));
+
+        // Security check: Must have captured args for both metadata simulation and media download
+        assert.equal(capturedArgs.length, 2, "Expected exactly 2 runner invocations (metadata simulation and download)");
+        for (const argsList of capturedArgs) {
+            assert.equal(
+                argsList.includes("--no-check-certificates"),
+                false,
+                "Insecure flag '--no-check-certificates' must NOT be passed to yt-dlp"
+            );
+        }
 
         // Validate through central result validator
         const validated = await validateExtractionResult(res, "tiktok");
