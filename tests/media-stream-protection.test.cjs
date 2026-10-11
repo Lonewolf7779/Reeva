@@ -320,3 +320,198 @@ test("Media Stream Protection: Remote media entries function without filesystem 
 
     registry.destroy();
 });
+
+// ==============================================================================
+// TEST G: ASYNCHRONOUS LOCAL MEDIA STREAM FILE VALIDATION (PHASE 3.18D-3-FIX1)
+// ==============================================================================
+
+test("Media Stream Protection (G1): Missing local file returns 404 MEDIA_NOT_FOUND and releases lease", async () => {
+    ensureTempDir();
+    const missingFile = path.join(REEVA_TEMP_DIR, `test_missing_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
+    if (fs.existsSync(missingFile)) {
+        fs.unlinkSync(missingFile);
+    }
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/missing.mp4",
+        platform: "youtube",
+        localFilePath: missingFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    try {
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(missingFile), 0);
+
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 404);
+
+        const body = await res.json();
+        assert.strictEqual(body.error.code, "MEDIA_NOT_FOUND");
+        assert.strictEqual(body.error.message, "The requested media file has expired or does not exist.");
+
+        // Wait brief tick to confirm lease release
+        await new Promise((r) => setTimeout(r, 40));
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(missingFile), 0, "Lease must be released on missing file");
+    } finally {
+        server.close();
+        defaultRegistry.deleteMedia(reg.id);
+    }
+});
+
+test("Media Stream Protection (G2): Oversized local file returns 413 PAYLOAD_TOO_LARGE and releases lease", async () => {
+    ensureTempDir();
+    const testFile = path.join(REEVA_TEMP_DIR, `test_oversized_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(1024, "O"));
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/oversized.mp4",
+        platform: "youtube",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const originalStat = fs.promises.stat;
+    // Simulate oversized file (300 MB > 250 MB ceiling)
+    fs.promises.stat = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(testFile)) {
+            return { size: 300 * 1024 * 1024 };
+        }
+        return originalStat.call(fs.promises, targetPath);
+    };
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 413);
+
+        const body = await res.json();
+        assert.strictEqual(body.error.code, "PAYLOAD_TOO_LARGE");
+        assert.strictEqual(body.error.message, "Media stream exceeded maximum permitted size.");
+
+        await new Promise((r) => setTimeout(r, 40));
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released on oversized file");
+    } finally {
+        fs.promises.stat = originalStat;
+        server.close();
+        defaultRegistry.deleteMedia(reg.id);
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});
+
+test("Media Stream Protection (G3): Unexpected filesystem errors return 500 STREAM_ERROR and release lease", async () => {
+    ensureTempDir();
+    const testFile = path.join(REEVA_TEMP_DIR, `test_ioerr_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(1024, "E"));
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/ioerr.mp4",
+        platform: "youtube",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const originalStat = fs.promises.stat;
+    // Simulate unexpected filesystem I/O error
+    fs.promises.stat = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(testFile)) {
+            const err = new Error("Simulated I/O disk hardware error");
+            err.code = "EIO";
+            throw err;
+        }
+        return originalStat.call(fs.promises, targetPath);
+    };
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 500);
+
+        const body = await res.json();
+        assert.strictEqual(body.error.code, "STREAM_ERROR");
+        assert.strictEqual(body.error.message, "Failed to stream local media file.");
+
+        await new Promise((r) => setTimeout(r, 40));
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released on filesystem error");
+    } finally {
+        fs.promises.stat = originalStat;
+        server.close();
+        defaultRegistry.deleteMedia(reg.id);
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});
+
+test("Media Stream Protection (G4): Client abort while async stat is pending releases lease without opening stream", async () => {
+    ensureTempDir();
+    const testFile = path.join(REEVA_TEMP_DIR, `test_abort_stat_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.mp4`);
+    fs.writeFileSync(testFile, Buffer.alloc(1024, "A"));
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/abort-stat.mp4",
+        platform: "youtube",
+        localFilePath: testFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const originalStat = fs.promises.stat;
+    let resumeStat;
+    const statGate = new Promise((resolve) => {
+        resumeStat = resolve;
+    });
+    let notifyStatStarted;
+    const statStarted = new Promise((resolve) => {
+        notifyStatStarted = resolve;
+    });
+
+    fs.promises.stat = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(testFile)) {
+            notifyStatStarted();
+            await statGate;
+        }
+        return originalStat.call(fs.promises, targetPath);
+    };
+
+    try {
+        const controller = new AbortController();
+        const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            signal: controller.signal
+        }).catch(() => {}); // Catch client-side abort rejection
+
+        // Wait until server has acquired lease and entered async stat
+        await statStarted;
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 1, "Lease must be held while stat is pending");
+
+        // Client aborts while stat is still pending
+        controller.abort();
+
+        // Release the stat pause to let server proceed
+        resumeStat();
+        await fetchPromise;
+
+        // Wait brief tick for server abort handler to settle
+        await new Promise((r) => setTimeout(r, 80));
+
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released after aborted stat");
+    } finally {
+        fs.promises.stat = originalStat;
+        if (resumeStat) resumeStat();
+        server.close();
+        defaultRegistry.deleteMedia(reg.id);
+        if (fs.existsSync(testFile)) {
+            try { fs.unlinkSync(testFile); } catch (_) {}
+        }
+    }
+});

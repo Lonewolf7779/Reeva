@@ -428,19 +428,29 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
                 return;
             }
 
-            if (!fs.existsSync(resolvedFilePath)) {
-                releaseLease();
-                logStreamTerminal("error", "MEDIA_NOT_FOUND");
-                return res.status(404).json({
-                    error: {
-                        code: "MEDIA_NOT_FOUND",
-                        message: "The requested media file has expired or does not exist."
-                    },
-                    requestId: req.id
-                });
+            let stat;
+            try {
+                stat = await fs.promises.stat(resolvedFilePath);
+            } catch (err) {
+                if (err.code === "ENOENT" || err.code === "ENOTDIR") {
+                    releaseLease();
+                    logStreamTerminal("error", "MEDIA_NOT_FOUND");
+                    return res.status(404).json({
+                        error: {
+                            code: "MEDIA_NOT_FOUND",
+                            message: "The requested media file has expired or does not exist."
+                        },
+                        requestId: req.id
+                    });
+                }
+                throw err;
             }
 
-            const stat = fs.statSync(resolvedFilePath);
+            if (abortController.signal.aborted || res.destroyed) {
+                releaseLease();
+                return;
+            }
+
             if (stat.size > maxMediaSize) {
                 releaseLease();
                 logStreamTerminal("error", "PAYLOAD_TOO_LARGE");
