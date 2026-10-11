@@ -463,13 +463,21 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
     });
 
     let notifyServerDisconnected;
-    const serverDisconnected = new Promise((resolve) => {
+    let rejectServerDisconnected;
+    const serverDisconnected = new Promise((resolve, reject) => {
         notifyServerDisconnected = resolve;
+        rejectServerDisconnected = reject;
     });
+    const disconnectTimer = setTimeout(() => {
+        rejectServerDisconnected(new Error("Server did not observe premature response termination within timeout"));
+    }, 5000);
 
     const server = http.createServer((req, res) => {
-        req.on("close", () => {
-            if (notifyServerDisconnected) notifyServerDisconnected();
+        res.on("close", () => {
+            if (!res.writableEnded) {
+                clearTimeout(disconnectTimer);
+                notifyServerDisconnected();
+            }
         });
         app(req, res);
     });
@@ -521,22 +529,28 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
 
         // 2. Client disconnects before the stat operation completes
         controller.abort();
-        await serverDisconnected; // Deterministic synchronization: wait until disconnect reached the server
 
-        // 3. The stat operation is subsequently allowed to complete
+        // 3. Server observes premature response termination (with bounded timeout)
+        await serverDisconnected;
+
+        // 4. The stat operation is subsequently allowed to complete
         resumeStat();
         await fetchPromise;
 
-        // Wait brief tick for server execution loop to process post-stat logic
-        await new Promise((r) => setTimeout(r, 60));
+        // 5. Bounded wait for server cancellation handling to finish lease release
+        const start = Date.now();
+        while (defaultRegistry.getActiveReaderCount(testFile) > 0 && Date.now() - start < 1000) {
+            await new Promise((r) => setTimeout(r, 20));
+        }
 
-        // 4. fs.createReadStream() is NOT called for that media file
+        // 6. fs.createReadStream() is NOT called for that media file
         assert.strictEqual(readStreamCreatedForTestFile, false, "createReadStream must NOT be called for aborted request");
 
-        // 5. The active-reader lease returns to zero
+        // 7. The active-reader lease returns to zero
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must return to 0 after aborted stat");
     } finally {
-        // 6. The filesystem mocks are restored in finally blocks
+        // 8. Clean up timers, mocks, and servers in finally block
+        clearTimeout(disconnectTimer);
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
@@ -560,13 +574,21 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     });
 
     let notifyServerDisconnected;
-    const serverDisconnected = new Promise((resolve) => {
+    let rejectServerDisconnected;
+    const serverDisconnected = new Promise((resolve, reject) => {
         notifyServerDisconnected = resolve;
+        rejectServerDisconnected = reject;
     });
+    const disconnectTimer = setTimeout(() => {
+        rejectServerDisconnected(new Error("Server did not observe premature response termination within timeout"));
+    }, 5000);
 
     const server = http.createServer((req, res) => {
-        req.on("close", () => {
-            if (notifyServerDisconnected) notifyServerDisconnected();
+        res.on("close", () => {
+            if (!res.writableEnded) {
+                clearTimeout(disconnectTimer);
+                notifyServerDisconnected();
+            }
         });
         app(req, res);
     });
@@ -621,22 +643,28 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
 
         // 2. Client disconnects before the stat operation completes
         controller.abort();
-        await serverDisconnected; // Deterministic synchronization: wait until disconnect reached the server
 
-        // 3. The stat operation is allowed to complete (with error)
+        // 3. Server observes premature response termination (with bounded timeout)
+        await serverDisconnected;
+
+        // 4. The stat operation is allowed to complete (with error)
         resumeStat();
         await fetchPromise;
 
-        // Wait brief tick for server execution loop to process catch block
-        await new Promise((r) => setTimeout(r, 60));
+        // 5. Bounded wait for server cancellation handling to finish lease release
+        const start = Date.now();
+        while (defaultRegistry.getActiveReaderCount(testFile) > 0 && Date.now() - start < 1000) {
+            await new Promise((r) => setTimeout(r, 20));
+        }
 
-        // 4. fs.createReadStream() is NOT called for that media file
+        // 6. fs.createReadStream() is NOT called for that media file
         assert.strictEqual(readStreamCreatedForTestFile, false, "createReadStream must NOT be called when stat fails after abort");
 
-        // 5. The active-reader lease returns to zero
+        // 7. The active-reader lease returns to zero
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must return to 0 after aborted stat error");
     } finally {
-        // 6. The filesystem mocks are restored in finally blocks
+        // 8. Clean up timers, mocks, and servers in finally block
+        clearTimeout(disconnectTimer);
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
