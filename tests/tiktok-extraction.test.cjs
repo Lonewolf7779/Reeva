@@ -350,7 +350,11 @@ test("TikTok Egress Proxy: Rejects disabling egress proxy in production environm
             (err) => err instanceof ExtractionError && err.message.includes("cannot be disabled in production")
         );
     } finally {
-        process.env.NODE_ENV = origNodeEnv;
+        if (origNodeEnv !== undefined) {
+            process.env.NODE_ENV = origNodeEnv;
+        } else {
+            delete process.env.NODE_ENV;
+        }
         if (origDisable !== undefined) {
             process.env.REEVA_DISABLE_EGRESS_PROXY = origDisable;
         } else {
