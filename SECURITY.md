@@ -65,6 +65,7 @@ Outbound network communication is segregated into two independent allowlists:
 - **Twitter / X**: `twitter.com`, `x.com`
 - **Pinterest**: `pinterest.com`, `pin.it`, regional Pinterest country domains
 - **YouTube**: `youtube.com`, `youtu.be`
+- **TikTok**: `tiktok.com`, `www.tiktok.com`, `m.tiktok.com`, `vm.tiktok.com`, `vt.tiktok.com`
 
 ### 2. Supported Media CDNs (`SUPPORTED_MEDIA_DOMAINS`)
 - **Instagram / Meta CDN**: `cdninstagram.com`, `fbcdn.net`, `instagram.com`
@@ -72,6 +73,8 @@ Outbound network communication is segregated into two independent allowlists:
 - **Twitter / X CDN**: `twimg.com`
 - **Pinterest CDN**: `pinimg.com`
 - **YouTube CDN**: `googlevideo.com`, `ytimg.com`
+
+> **Note on Platform Streaming Paths**: While platforms like Instagram, Facebook, Twitter / X, and Pinterest stream media via remote upstream CDN allowlists, TikTok and combined YouTube (`VIDEO_AND_AUDIO`) downloads materialize media locally into isolated files within `REEVA_TEMP_DIR` via controlled subprocess extraction (`yt-dlp` / FFmpeg). The resulting local artifacts are registered in the process-local media registry and served through bounded local file streams (`/api/media/:mediaId`) rather than the remote CDN streaming path.
 
 Outbound retrieval is prohibited for any destination outside these boundaries.
 
@@ -176,8 +179,9 @@ Reeva implements a production-grade lifecycle state machine for container orches
 
 2. **Readiness Probe (`GET /ready`)**:
    - Returns HTTP 200 JSON `{ "status": "ready" }` during normal operation.
+   - Returns HTTP 503 JSON `{ "status": "initializing", "message": "..." }` in production (`NODE_ENV=production`) while production preflight validation has not yet completed successfully.
    - Returns HTTP 503 JSON `{ "status": "shutting_down" }` once graceful shutdown is initiated.
-   - Independent of extraction limiters, allowing container orchestrators to remove the instance from active service endpoints.
+   - Independent of extraction limiters, allowing container orchestrators to gate ingress traffic and remove the instance from active service endpoints.
 
 3. **Graceful Shutdown (`SIGTERM` / `SIGINT`)**:
    - **Idempotent**: Multiple signals or shutdown invocations return the identical in-progress promise.
