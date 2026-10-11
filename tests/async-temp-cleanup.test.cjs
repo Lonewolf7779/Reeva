@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const os = require("node:os");
+const http = require("node:http");
 
 // Isolate temporary directory for this test worker to prevent cross-worker test interference
 process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-async-${process.pid}`);
@@ -21,7 +22,7 @@ const {
     cleanupTempFiles: genericCleanupTempFiles,
     extractGeneric
 } = require("../lib/extraction/adapters/generic.cjs");
-const { defaultRegistry } = require("../lib/media-registry.cjs");
+const { defaultRegistry, MediaRegistry } = require("../lib/media-registry.cjs");
 const { ExtractionError, EXTRACTION_ERROR_CODES } = require("../lib/extraction/types.cjs");
 const app = require("../server.cjs");
 
@@ -390,6 +391,202 @@ test("Async Cleanup (J): Graceful shutdown awaits cleanup and completes cleanly"
             try { fs.unlinkSync(staleFile); } catch (_) {}
         }
     }
+});
+
+// ==============================================================================
+// TEST K: DETERMINISTIC ASYNC DELETION VS STREAM LEASE COORDINATION
+// ==============================================================================
+
+test("Async Cleanup (K1): Pause during async deletion denies new leases and returns 404 MEDIA_NOT_FOUND", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_race_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(1024, "A"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/race.mp4",
+        platform: "youtube",
+        localFilePath: staleFile
+    });
+
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const originalUnlink = fs.promises.unlink;
+    let resumeUnlink;
+    const unlinkGate = new Promise((resolve) => {
+        resumeUnlink = resolve;
+    });
+    let notifyEntered;
+    const unlinkEntered = new Promise((resolve) => {
+        notifyEntered = resolve;
+    });
+
+    fs.promises.unlink = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(staleFile)) {
+            notifyEntered();
+            await unlinkGate;
+        }
+        return originalUnlink.call(fs.promises, targetPath);
+    };
+
+    try {
+        const cleanupPromise = cleanStaleTempFiles(15 * 60 * 1000);
+
+        // Wait until cleanStaleTempFiles has claimed deletion and entered async unlink
+        await unlinkEntered;
+
+        // 1. Verify deletion is active in registry
+        assert.strictEqual(defaultRegistry.isDeletionInProgress(staleFile), true, "Deletion claim must be marked in progress");
+
+        // 2. Direct file lease acquisition must be denied
+        const deniedFileLease = defaultRegistry.acquireFileLease(staleFile);
+        assert.strictEqual(deniedFileLease, null, "acquireFileLease must return null when deletion is claimed");
+
+        // 3. Media stream lease acquisition must be denied
+        const deniedStreamLease = defaultRegistry.acquireStreamLease(reg.id);
+        assert.strictEqual(deniedStreamLease, null, "acquireStreamLease must return null when deletion is claimed");
+
+        // 4. Active reader count must remain 0
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 0, "No active readers should be attached");
+
+        // 5. HTTP streaming request during deletion must cleanly return 404 MEDIA_NOT_FOUND
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        assert.strictEqual(res.status, 404, "HTTP request during deletion must receive 404");
+        const body = await res.json();
+        assert.strictEqual(body.error.code, "MEDIA_NOT_FOUND", "Error code must be MEDIA_NOT_FOUND");
+
+        // Release the pause to let deletion complete
+        resumeUnlink();
+        await cleanupPromise;
+
+        // 6. Post-deletion state
+        assert.strictEqual(defaultRegistry.isDeletionInProgress(staleFile), false, "Claim must be released after deletion");
+        assert.strictEqual(fs.existsSync(staleFile), false, "File must be unlinked");
+    } finally {
+        fs.promises.unlink = originalUnlink;
+        if (resumeUnlink) resumeUnlink();
+        await new Promise((resolve) => server.close(resolve));
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (K2): Multiple concurrent active readers defer deletion until final lease release", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_multi_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(1024, "B"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const r1 = defaultRegistry.acquireFileLease(staleFile);
+    const r2 = defaultRegistry.acquireFileLease(staleFile);
+    assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 2);
+
+    try {
+        await cleanStaleTempFiles(15 * 60 * 1000);
+
+        // Readers protected the file; it must not have been unlinked
+        assert.strictEqual(fs.existsSync(staleFile), true, "File must be preserved while readers exist");
+        assert.strictEqual(defaultRegistry.isPendingDeletion(staleFile), true, "File must be marked for pending deletion");
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 2);
+
+        // First release: 1 reader remains, file still alive
+        r1();
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 1);
+        assert.strictEqual(fs.existsSync(staleFile), true, "File must be preserved while 1 reader remains");
+        assert.strictEqual(defaultRegistry.isPendingDeletion(staleFile), true);
+
+        // Second release: 0 readers remain, file must be immediately deleted
+        r2();
+        assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 0);
+        assert.strictEqual(defaultRegistry.isPendingDeletion(staleFile), false);
+        assert.strictEqual(fs.existsSync(staleFile), false, "File must be deleted after final reader releases lease");
+    } finally {
+        r1();
+        r2();
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (K3): Deletion claim is released cleanly on filesystem unlink errors", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_err_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(512, "C"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const originalUnlink = fs.promises.unlink;
+    fs.promises.unlink = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(staleFile)) {
+            throw new Error("Simulated EIO filesystem error");
+        }
+        return originalUnlink.call(fs.promises, targetPath);
+    };
+
+    try {
+        await cleanStaleTempFiles(15 * 60 * 1000);
+
+        // Claim must be released even though unlink threw
+        assert.strictEqual(defaultRegistry.isDeletionInProgress(staleFile), false, "Claim must be released on failure");
+
+        // Subsequent lease acquisition is possible again
+        const lease = defaultRegistry.acquireFileLease(staleFile);
+        assert.ok(typeof lease === "function", "Lease acquisition must be restored");
+        lease();
+    } finally {
+        fs.promises.unlink = originalUnlink;
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (K4): MediaRegistry coordinated claimDeletion API contracts", () => {
+    const reg = new MediaRegistry();
+    const dummyPath = path.join(REEVA_TEMP_DIR, "contract_test.mp4");
+
+    // Invalid / empty path returns false
+    assert.strictEqual(reg.claimDeletion(""), false);
+    assert.strictEqual(reg.claimDeletion(null), false);
+    assert.strictEqual(reg.isDeletionInProgress(dummyPath), false);
+
+    // Initial claim succeeds
+    assert.strictEqual(reg.claimDeletion(dummyPath), true);
+    assert.strictEqual(reg.isDeletionInProgress(dummyPath), true);
+
+    // Second duplicate claim returns false
+    assert.strictEqual(reg.claimDeletion(dummyPath), false);
+
+    // Lease acquisition is denied while claimed
+    assert.strictEqual(reg.acquireFileLease(dummyPath), null);
+
+    // Release claim
+    reg.releaseDeletionClaim(dummyPath);
+    assert.strictEqual(reg.isDeletionInProgress(dummyPath), false);
+
+    // Lease acquisition succeeds once claim released
+    const release = reg.acquireFileLease(dummyPath);
+    assert.ok(typeof release === "function");
+    assert.strictEqual(reg.getActiveReaderCount(dummyPath), 1);
+
+    // Claiming while reader active returns false and marks pending deletion
+    assert.strictEqual(reg.claimDeletion(dummyPath), false);
+    assert.strictEqual(reg.isPendingDeletion(dummyPath), true);
+
+    release();
+    reg.destroy();
 });
 
 test.after(() => {

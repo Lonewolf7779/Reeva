@@ -410,7 +410,18 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             }
 
             // Acquire active file stream lease before opening or checking file
-            releaseLease = defaultRegistry.acquireFileLease(resolvedFilePath);
+            const leaseFn = defaultRegistry.acquireFileLease(resolvedFilePath);
+            if (!leaseFn) {
+                logStreamTerminal("error", "MEDIA_NOT_FOUND");
+                return res.status(404).json({
+                    error: {
+                        code: "MEDIA_NOT_FOUND",
+                        message: "The requested media file has expired or does not exist."
+                    },
+                    requestId: req.id
+                });
+            }
+            releaseLease = leaseFn;
 
             if (abortController.signal.aborted || res.destroyed) {
                 releaseLease();
