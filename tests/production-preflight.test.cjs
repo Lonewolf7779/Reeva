@@ -99,16 +99,35 @@ test("validateBinaryExecutable: Rejects missing, empty, or nonexistent paths", a
     );
 });
 
-test("validateBinaryExecutable: Rejects directories without binary candidate", async () => {
+test("validateBinaryExecutable: Rejects directory paths for YT_DLP_PATH even if containing executable", async () => {
     ensureCleanTestDir();
-    const emptyDir = path.join(TEST_DIR, "empty_dir");
-    fs.mkdirSync(emptyDir, { recursive: true });
+    const dirPath = path.join(TEST_DIR, "ytdlp_directory");
+    fs.mkdirSync(dirPath, { recursive: true });
+    const nestedBin = path.join(dirPath, process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+    fs.writeFileSync(nestedBin, "dummy inside dir");
 
     try {
         await assert.rejects(
-            () => validateBinaryExecutable(emptyDir, "YT_DLP_PATH"),
-            (err) => err instanceof ConfigError && err.message.includes("is a directory and does not contain")
+            () => validateBinaryExecutable(dirPath, "YT_DLP_PATH"),
+            (err) => err instanceof ConfigError && err.message.includes("is a directory and cannot be used as an executable")
         );
+    } finally {
+        removeTestDir();
+    }
+});
+
+test("validateBinaryExecutable: Resolves FFMPEG_PATH directory containing ffmpeg binary", async () => {
+    ensureCleanTestDir();
+    const dirPath = path.join(TEST_DIR, "ffmpeg_directory");
+    fs.mkdirSync(dirPath, { recursive: true });
+    const nestedBin = path.join(dirPath, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+    fs.writeFileSync(nestedBin, "dummy inside dir");
+
+    const mockRunner = async () => ({ stdout: "ffmpeg version 6.0", stderr: "", exitCode: 0 });
+
+    try {
+        const validated = await validateBinaryExecutable(dirPath, "FFMPEG_PATH", ["-version"], { runner: mockRunner });
+        assert.strictEqual(validated, path.resolve(nestedBin));
     } finally {
         removeTestDir();
     }
@@ -181,6 +200,7 @@ test("validateProductionPreflight: Production requires YT_DLP_PATH", async () =>
     await assert.rejects(
         () => validateProductionPreflight({
             NODE_ENV: "production",
+            FFMPEG_PATH: path.join(TEST_DIR, "ffmpeg.exe"),
             REEVA_TEMP_DIR: TEST_DIR
         }),
         (err) => err instanceof ConfigError && err.message.includes("Missing required production binary configuration: YT_DLP_PATH")
@@ -189,7 +209,28 @@ test("validateProductionPreflight: Production requires YT_DLP_PATH", async () =>
     removeTestDir();
 });
 
-test("validateProductionPreflight: Production verifies both YT_DLP_PATH and optional FFMPEG_PATH", async () => {
+test("validateProductionPreflight: Production requires FFMPEG_PATH for default VIDEO_AND_AUDIO pipeline", async () => {
+    ensureCleanTestDir();
+    const dummyYt = path.join(TEST_DIR, "ytdlp.exe");
+    fs.writeFileSync(dummyYt, "mock yt");
+
+    const mockRunner = async () => ({ stdout: "1.0.0", stderr: "", exitCode: 0 });
+
+    try {
+        await assert.rejects(
+            () => validateProductionPreflight({
+                NODE_ENV: "production",
+                YT_DLP_PATH: dummyYt,
+                REEVA_TEMP_DIR: TEST_DIR
+            }, { runner: mockRunner }),
+            (err) => err instanceof ConfigError && err.message.includes("Missing required production binary configuration: FFMPEG_PATH")
+        );
+    } finally {
+        removeTestDir();
+    }
+});
+
+test("validateProductionPreflight: Production verifies both YT_DLP_PATH and FFMPEG_PATH", async () => {
     ensureCleanTestDir();
     const dummyYt = path.join(TEST_DIR, "ytdlp.exe");
     const dummyFfmpeg = path.join(TEST_DIR, "ffmpeg.exe");
@@ -219,22 +260,30 @@ test("validateProductionPreflight: Production verifies both YT_DLP_PATH and opti
     }
 });
 
-test("validateProductionPreflight: Production permits missing FFMPEG_PATH and marks ffmpegPath null", async () => {
+test("validateProductionPreflight: Rejects failing or timing out FFmpeg probe in production", async () => {
     ensureCleanTestDir();
     const dummyYt = path.join(TEST_DIR, "ytdlp.exe");
+    const dummyFfmpeg = path.join(TEST_DIR, "ffmpeg.exe");
     fs.writeFileSync(dummyYt, "mock yt");
+    fs.writeFileSync(dummyFfmpeg, "mock ffmpeg");
 
-    const mockRunner = async () => ({ stdout: "1.0.0", stderr: "", exitCode: 0 });
+    const failingRunner = async (cmd) => {
+        if (cmd === path.resolve(dummyYt)) {
+            return { stdout: "2026.01.01", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "Unrecognized option -version", exitCode: 1 };
+    };
 
     try {
-        const result = await validateProductionPreflight({
-            NODE_ENV: "production",
-            YT_DLP_PATH: dummyYt,
-            REEVA_TEMP_DIR: TEST_DIR
-        }, { runner: mockRunner });
-
-        assert.strictEqual(result.ytDlpPath, path.resolve(dummyYt));
-        assert.strictEqual(result.ffmpegPath, null);
+        await assert.rejects(
+            () => validateProductionPreflight({
+                NODE_ENV: "production",
+                YT_DLP_PATH: dummyYt,
+                FFMPEG_PATH: dummyFfmpeg,
+                REEVA_TEMP_DIR: TEST_DIR
+            }, { runner: failingRunner }),
+            (err) => err instanceof ConfigError && err.message.includes("FFMPEG_PATH version probe failed with exit code 1")
+        );
     } finally {
         removeTestDir();
     }
