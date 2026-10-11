@@ -125,7 +125,7 @@ test("TikTok Error Mapping: Normalizes bot challenge, timeout, and private video
 // 3. DETERMINISTIC EXTRACTION ADAPTER EXECUTION (MOCKED RUNNER)
 // ==============================================================================
 
-test("TikTok Adapter: Subprocess isolation flags and explicit FFmpeg merging policy", async () => {
+test("TikTok Adapter: Subprocess isolation flags, explicit FFmpeg merging policy, and string arguments", async () => {
     if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
 
     // Subtest A: With explicit FFmpeg path configured
@@ -156,6 +156,11 @@ test("TikTok Adapter: Subprocess isolation flags and explicit FFmpeg merging pol
         assert.equal(capturedArgsWithFfmpeg.length, 2);
         const requiredFlags = ["--ignore-config", "--no-cache-dir", "--no-cookies", "--no-call-home", "--no-playlist"];
         for (const argsList of capturedArgsWithFfmpeg) {
+            // Task requirement: Every argument passed to runner must be a string (never Promise, object, or undefined)
+            for (const arg of argsList) {
+                assert.equal(typeof arg, "string", `Subprocess argument must be a string, got ${typeof arg} (${arg})`);
+            }
+
             for (const flag of requiredFlags) {
                 assert.ok(argsList.includes(flag), `Arguments must include isolation flag '${flag}'`);
             }
@@ -209,6 +214,9 @@ test("TikTok Adapter: Subprocess isolation flags and explicit FFmpeg merging pol
         try {
             assert.equal(capturedArgsNoFfmpeg.length, 2);
             for (const argsList of capturedArgsNoFfmpeg) {
+                for (const arg of argsList) {
+                    assert.equal(typeof arg, "string", `Subprocess argument must be a string, got ${typeof arg} (${arg})`);
+                }
                 for (const flag of ["--ignore-config", "--no-cache-dir", "--no-cookies", "--no-call-home", "--no-playlist"]) {
                     assert.ok(argsList.includes(flag), `Arguments must include isolation flag '${flag}'`);
                 }
@@ -232,6 +240,141 @@ test("TikTok Adapter: Subprocess isolation flags and explicit FFmpeg merging pol
     } finally {
         if (originalFfmpegEnv !== undefined) {
             process.env.FFMPEG_PATH = originalFfmpegEnv;
+        }
+    }
+});
+
+test("TikTok Egress Proxy: Explicit REEVA_EGRESS_PROXY_URL is passed as exact URL string", async () => {
+    const origProxyUrl = process.env.REEVA_EGRESS_PROXY_URL;
+    process.env.REEVA_EGRESS_PROXY_URL = "http://127.0.0.1:8999";
+
+    const capturedArgs = [];
+    const mockRunner = async ({ args }) => {
+        capturedArgs.push([...args]);
+        const oIndex = args.indexOf("-o");
+        if (oIndex !== -1 && args[oIndex + 1]) {
+            fs.writeFileSync(args[oIndex + 1], Buffer.alloc(1024));
+        }
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({ id: "tt_test", title: "Proxy Test" }),
+            stderr: ""
+        };
+    };
+
+    try {
+        const res = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+            runner: mockRunner
+        });
+
+        assert.equal(capturedArgs.length, 2);
+        for (const argsList of capturedArgs) {
+            for (const arg of argsList) {
+                assert.equal(typeof arg, "string", `Argument must be string: ${arg}`);
+            }
+            const proxyIdx = argsList.indexOf("--proxy");
+            assert.notEqual(proxyIdx, -1, "Must contain --proxy flag");
+            assert.equal(argsList[proxyIdx + 1], "http://127.0.0.1:8999/");
+        }
+
+        if (res.localFilePath && fs.existsSync(res.localFilePath)) {
+            try { fs.unlinkSync(res.localFilePath); } catch (_) {}
+        }
+    } finally {
+        if (origProxyUrl !== undefined) {
+            process.env.REEVA_EGRESS_PROXY_URL = origProxyUrl;
+        } else {
+            delete process.env.REEVA_EGRESS_PROXY_URL;
+        }
+    }
+});
+
+test("TikTok Egress Proxy: Awaits local loopback proxy resolution when explicit proxy is absent", async () => {
+    const origProxyUrl = process.env.REEVA_EGRESS_PROXY_URL;
+    const origDisable = process.env.REEVA_DISABLE_EGRESS_PROXY;
+    delete process.env.REEVA_EGRESS_PROXY_URL;
+    delete process.env.REEVA_DISABLE_EGRESS_PROXY;
+
+    const capturedArgs = [];
+    const mockRunner = async ({ args }) => {
+        capturedArgs.push([...args]);
+        const oIndex = args.indexOf("-o");
+        if (oIndex !== -1 && args[oIndex + 1]) {
+            fs.writeFileSync(args[oIndex + 1], Buffer.alloc(1024));
+        }
+        return {
+            exitCode: 0,
+            stdout: JSON.stringify({ id: "tt_test", title: "Awaited Proxy Test" }),
+            stderr: ""
+        };
+    };
+
+    try {
+        const res = await extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+            runner: mockRunner
+        });
+
+        assert.equal(capturedArgs.length, 2);
+        for (const argsList of capturedArgs) {
+            for (const arg of argsList) {
+                assert.equal(typeof arg, "string", `Subprocess argument must be string, not Promise: ${arg}`);
+            }
+            const proxyIdx = argsList.indexOf("--proxy");
+            assert.notEqual(proxyIdx, -1, "Must contain --proxy flag when egress proxy is enabled");
+            const proxyValue = argsList[proxyIdx + 1];
+            assert.equal(typeof proxyValue, "string");
+            assert.ok(proxyValue.startsWith("http://127.0.0.1:"), `Proxy must be bound to loopback: ${proxyValue}`);
+        }
+
+        if (res.localFilePath && fs.existsSync(res.localFilePath)) {
+            try { fs.unlinkSync(res.localFilePath); } catch (_) {}
+        }
+    } finally {
+        if (origProxyUrl !== undefined) process.env.REEVA_EGRESS_PROXY_URL = origProxyUrl;
+        if (origDisable !== undefined) process.env.REEVA_DISABLE_EGRESS_PROXY = origDisable;
+    }
+});
+
+test("TikTok Egress Proxy: Rejects disabling egress proxy in production environment", async () => {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origDisable = process.env.REEVA_DISABLE_EGRESS_PROXY;
+
+    process.env.NODE_ENV = "production";
+    process.env.REEVA_DISABLE_EGRESS_PROXY = "true";
+
+    try {
+        await assert.rejects(
+            () => extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+                runner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("cannot be disabled in production")
+        );
+    } finally {
+        process.env.NODE_ENV = origNodeEnv;
+        if (origDisable !== undefined) {
+            process.env.REEVA_DISABLE_EGRESS_PROXY = origDisable;
+        } else {
+            delete process.env.REEVA_DISABLE_EGRESS_PROXY;
+        }
+    }
+});
+
+test("TikTok Egress Proxy: Malformed REEVA_EGRESS_PROXY_URL is rejected", async () => {
+    const origProxyUrl = process.env.REEVA_EGRESS_PROXY_URL;
+    process.env.REEVA_EGRESS_PROXY_URL = "not-a-valid-proxy-url";
+
+    try {
+        await assert.rejects(
+            () => extractTikTok("https://www.tiktok.com/@user/video/7106594312292453678", {
+                runner: async () => ({ exitCode: 0, stdout: "{}", stderr: "" })
+            }),
+            (err) => err instanceof ExtractionError && err.message.includes("REEVA_EGRESS_PROXY_URL is malformed")
+        );
+    } finally {
+        if (origProxyUrl !== undefined) {
+            process.env.REEVA_EGRESS_PROXY_URL = origProxyUrl;
+        } else {
+            delete process.env.REEVA_EGRESS_PROXY_URL;
         }
     }
 });
