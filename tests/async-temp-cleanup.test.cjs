@@ -16,7 +16,8 @@ const {
     cleanStaleTempFiles,
     cleanupTempFiles: ytCleanupTempFiles,
     extractYouTube,
-    getActiveScanCount
+    getActiveScanCount,
+    getTargetCoordinator
 } = require("../lib/extraction/adapters/youtube.cjs");
 const {
     cleanupTempFiles: genericCleanupTempFiles,
@@ -587,6 +588,188 @@ test("Async Cleanup (K4): MediaRegistry coordinated claimDeletion API contracts"
 
     release();
     reg.destroy();
+});
+
+// ==============================================================================
+// TEST L: COMPLETE DELETION COORDINATION REQUIREMENT (PHASE 3.18D-2-FIX2)
+// ==============================================================================
+
+test("Async Cleanup (L1): getTargetCoordinator strictly validates complete coordinator API", () => {
+    // 1. Default fallback resolves defaultRegistry
+    assert.strictEqual(getTargetCoordinator(), defaultRegistry);
+    assert.strictEqual(getTargetCoordinator(null), defaultRegistry);
+    assert.strictEqual(getTargetCoordinator(undefined), defaultRegistry);
+
+    // 2. Complete custom MediaRegistry resolves successfully
+    const customReg = new MediaRegistry();
+    assert.strictEqual(getTargetCoordinator(customReg), customReg);
+    customReg.destroy();
+
+    // 3. Callback-only argument returns null
+    assert.strictEqual(getTargetCoordinator(() => false), null);
+    assert.strictEqual(getTargetCoordinator(() => true), null);
+
+    // 4. Incomplete coordinator: claimDeletion only returns null
+    assert.strictEqual(getTargetCoordinator({ claimDeletion: () => true }), null);
+
+    // 5. Incomplete coordinator: releaseDeletionClaim only returns null
+    assert.strictEqual(getTargetCoordinator({ releaseDeletionClaim: () => {} }), null);
+
+    // 6. Incomplete coordinator: isPathActive only returns null
+    assert.strictEqual(getTargetCoordinator({ isPathActive: () => false }), null);
+
+    // 7. Non-object invalid types return null
+    assert.strictEqual(getTargetCoordinator("not-a-coordinator"), null);
+    assert.strictEqual(getTargetCoordinator(12345), null);
+    assert.strictEqual(getTargetCoordinator(true), null);
+});
+
+test("Async Cleanup (L2): Complete custom MediaRegistry coordinates stale-file deletion", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_custom_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(512, "L2"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const customReg = new MediaRegistry();
+    let claimCalled = false;
+    let releaseCalled = false;
+
+    const originalClaim = customReg.claimDeletion.bind(customReg);
+    const originalRelease = customReg.releaseDeletionClaim.bind(customReg);
+
+    customReg.claimDeletion = (p) => {
+        if (path.resolve(p) === path.resolve(staleFile)) claimCalled = true;
+        return originalClaim(p);
+    };
+    customReg.releaseDeletionClaim = (p) => {
+        if (path.resolve(p) === path.resolve(staleFile)) releaseCalled = true;
+        return originalRelease(p);
+    };
+
+    try {
+        const removed = await cleanStaleTempFiles(15 * 60 * 1000, customReg);
+        assert.ok(removed >= 1, "Stale file must be removed by custom coordinator");
+        assert.strictEqual(claimCalled, true, "claimDeletion must be called on custom coordinator");
+        assert.strictEqual(releaseCalled, true, "releaseDeletionClaim must be called on custom coordinator");
+        assert.strictEqual(fs.existsSync(staleFile), false, "Stale file must be unlinked");
+    } finally {
+        customReg.destroy();
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (L3): Callback-only argument fails safely and NEVER calls fs.promises.unlink", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_callback_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(512, "L3"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const originalUnlink = fs.promises.unlink;
+    let unlinkAttempted = false;
+
+    fs.promises.unlink = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(staleFile)) {
+            unlinkAttempted = true;
+        }
+        return originalUnlink.call(fs.promises, targetPath);
+    };
+
+    try {
+        const callbackOnly = () => false; // Reports not-active
+        const removed = await cleanStaleTempFiles(15 * 60 * 1000, callbackOnly);
+
+        assert.strictEqual(removed, 0, "No files should be deleted without a complete coordinator");
+        assert.strictEqual(unlinkAttempted, false, "fs.promises.unlink must NEVER be called without a deletion claim");
+        assert.strictEqual(fs.existsSync(staleFile), true, "File must remain on disk when coordinator is missing");
+    } finally {
+        fs.promises.unlink = originalUnlink;
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (L4): Incomplete coordinator missing releaseDeletionClaim fails safely and NEVER calls fs.promises.unlink", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_incompl1_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(512, "L4"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const originalUnlink = fs.promises.unlink;
+    let unlinkAttempted = false;
+
+    fs.promises.unlink = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(staleFile)) {
+            unlinkAttempted = true;
+        }
+        return originalUnlink.call(fs.promises, targetPath);
+    };
+
+    try {
+        const incompleteCoordinator = {
+            claimDeletion: () => true
+            // releaseDeletionClaim is deliberately absent
+        };
+        const removed = await cleanStaleTempFiles(15 * 60 * 1000, incompleteCoordinator);
+
+        assert.strictEqual(removed, 0, "No files should be deleted with incomplete coordinator");
+        assert.strictEqual(unlinkAttempted, false, "fs.promises.unlink must NEVER be called with incomplete coordinator");
+        assert.strictEqual(fs.existsSync(staleFile), true, "File must remain on disk");
+    } finally {
+        fs.promises.unlink = originalUnlink;
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
+});
+
+test("Async Cleanup (L5): Incomplete coordinator missing claimDeletion fails safely and NEVER calls fs.promises.unlink", async () => {
+    ensureTempDir();
+    const id = crypto.randomBytes(6).toString("hex");
+    const staleFile = path.join(REEVA_TEMP_DIR, `reeva_mux_incompl2_${id}.mp4`);
+    fs.writeFileSync(staleFile, Buffer.alloc(512, "L5"));
+
+    const oneHourAgo = (Date.now() - 60 * 60 * 1000) / 1000;
+    fs.utimesSync(staleFile, oneHourAgo, oneHourAgo);
+
+    const originalUnlink = fs.promises.unlink;
+    let unlinkAttempted = false;
+
+    fs.promises.unlink = async (targetPath) => {
+        if (path.resolve(targetPath) === path.resolve(staleFile)) {
+            unlinkAttempted = true;
+        }
+        return originalUnlink.call(fs.promises, targetPath);
+    };
+
+    try {
+        const incompleteCoordinator = {
+            isPathActive: () => false,
+            releaseDeletionClaim: () => {}
+            // claimDeletion is deliberately absent
+        };
+        const removed = await cleanStaleTempFiles(15 * 60 * 1000, incompleteCoordinator);
+
+        assert.strictEqual(removed, 0, "No files should be deleted with incomplete coordinator");
+        assert.strictEqual(unlinkAttempted, false, "fs.promises.unlink must NEVER be called with incomplete coordinator");
+        assert.strictEqual(fs.existsSync(staleFile), true, "File must remain on disk");
+    } finally {
+        fs.promises.unlink = originalUnlink;
+        if (fs.existsSync(staleFile)) {
+            try { fs.unlinkSync(staleFile); } catch (_) {}
+        }
+    }
 });
 
 test.after(() => {
