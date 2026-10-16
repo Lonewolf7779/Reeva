@@ -60,8 +60,11 @@ async function closeServer(server) {
         }
         server._sockets.clear();
     }
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
     if (typeof server.closeAllConnections === "function") {
-        server.closeAllConnections();
+        try { server.closeAllConnections(); } catch (_) {}
     }
     if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));
@@ -267,7 +270,7 @@ test("Media Stream Protection: HTTP streaming acquires and releases lease cleanl
         localFilePath: testFile
     });
 
-    const server = http.createServer(app);
+    const server = trackServer(http.createServer(app));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
@@ -275,7 +278,9 @@ test("Media Stream Protection: HTTP streaming acquires and releases lease cleanl
         // Before stream: 0 active readers
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0);
 
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" }
+        });
         assert.strictEqual(res.status, 200);
 
         const buf = await res.arrayBuffer();
@@ -309,13 +314,14 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
         localFilePath: testFile
     });
 
-    const server = http.createServer(app);
+    const server = trackServer(http.createServer(app));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
     try {
         const controller = new AbortController();
         const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" },
             signal: controller.signal
         });
         assert.strictEqual(res.status, 200);
@@ -388,14 +394,16 @@ test("Media Stream Protection (G1): Missing local file returns 404 MEDIA_NOT_FOU
         localFilePath: missingFile
     });
 
-    const server = http.createServer(app);
+    const server = trackServer(http.createServer(app));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
     try {
         assert.strictEqual(defaultRegistry.getActiveReaderCount(missingFile), 0);
 
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" }
+        });
         assert.strictEqual(res.status, 404);
 
         const body = await res.json();
@@ -422,7 +430,7 @@ test("Media Stream Protection (G2): Oversized local file returns 413 PAYLOAD_TOO
         localFilePath: testFile
     });
 
-    const server = http.createServer(app);
+    const server = trackServer(http.createServer(app));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
@@ -436,7 +444,9 @@ test("Media Stream Protection (G2): Oversized local file returns 413 PAYLOAD_TOO
     };
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" }
+        });
         assert.strictEqual(res.status, 413);
 
         const body = await res.json();
@@ -466,7 +476,7 @@ test("Media Stream Protection (G3): Unexpected filesystem errors return 500 STRE
         localFilePath: testFile
     });
 
-    const server = http.createServer(app);
+    const server = trackServer(http.createServer(app));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
@@ -482,7 +492,9 @@ test("Media Stream Protection (G3): Unexpected filesystem errors return 500 STRE
     };
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" }
+        });
         assert.strictEqual(res.status, 500);
 
         const body = await res.json();
@@ -720,4 +732,7 @@ test.after(() => {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
+    if (process.send) {
+        setTimeout(() => process.exit(0), 100).unref();
+    }
 });
