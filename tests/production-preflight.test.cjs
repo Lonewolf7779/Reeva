@@ -333,5 +333,4 @@ test("startServer: Blocks listen and throws if production preflight fails", asyn
 
 test.after(() => {
     removeTestDir();
-    setTimeout(() => process.exit(0), 200).unref();
 });
