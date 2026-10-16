@@ -4,7 +4,7 @@
   "main": "server.cjs",
   "scripts": {
     "start": "node server.cjs",
-    "test": "node --test --test-concurrency=1 --test-force-exit --test-timeout=30000"
+    "test": "node --test"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
