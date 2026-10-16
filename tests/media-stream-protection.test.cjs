@@ -41,8 +41,25 @@ async function awaitWithTimeout(promise, timeoutMs, timeoutMessage) {
     }
 }
 
+function trackServer(server) {
+    if (!server) return server;
+    const sockets = new Set();
+    server.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
+    });
+    server._sockets = sockets;
+    return server;
+}
+
 async function closeServer(server) {
     if (!server) return;
+    if (server._sockets) {
+        for (const s of server._sockets) {
+            try { s.destroy(); } catch (_) {}
+        }
+        server._sockets.clear();
+    }
     if (typeof server.closeAllConnections === "function") {
         server.closeAllConnections();
     }
@@ -500,14 +517,14 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         notifyServerDisconnected = resolve;
     });
 
-    const server = http.createServer((req, res) => {
+    const server = trackServer(http.createServer((req, res) => {
         res.on("close", () => {
             if (!res.writableEnded) {
                 notifyServerDisconnected();
             }
         });
         app(req, res);
-    });
+    }));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
@@ -547,6 +564,7 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
     try {
         const controller = new AbortController();
         const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" },
             signal: controller.signal
         }).catch(() => {}); // Catch client-side abort rejection
 
@@ -604,14 +622,14 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
         notifyServerDisconnected = resolve;
     });
 
-    const server = http.createServer((req, res) => {
+    const server = trackServer(http.createServer((req, res) => {
         res.on("close", () => {
             if (!res.writableEnded) {
                 notifyServerDisconnected();
             }
         });
         app(req, res);
-    });
+    }));
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
@@ -654,6 +672,7 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     try {
         const controller = new AbortController();
         const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
+            headers: { "Connection": "close" },
             signal: controller.signal
         }).catch(() => {}); // Catch client-side abort rejection
 

@@ -432,6 +432,9 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             if (abortController.signal.aborted || res.destroyed) {
                 releaseLease();
+                if (!res.destroyed) {
+                    res.destroy();
+                }
                 return;
             }
 
@@ -441,6 +444,9 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             } catch (err) {
                 if (abortController.signal.aborted || res.destroyed) {
                     releaseLease();
+                    if (!res.destroyed) {
+                        res.destroy();
+                    }
                     return;
                 }
                 if (err.code === "ENOENT" || err.code === "ENOTDIR") {
@@ -459,6 +465,9 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
 
             if (abortController.signal.aborted || res.destroyed) {
                 releaseLease();
+                if (!res.destroyed) {
+                    res.destroy();
+                }
                 return;
             }
 
