@@ -27,6 +27,35 @@ before(async () => {
     await cleanStaleTempFiles();
 });
 
+function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            host: "127.0.0.1",
+            port,
+            path: reqPath,
+            method,
+            agent: false,
+            headers: { "Connection": "close", ...headers }
+        }, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+                const rawBody = Buffer.concat(chunks);
+                resolve({
+                    status: res.statusCode,
+                    headers: res.headers,
+                    body: rawBody,
+                    arrayBuffer: async () => rawBody.buffer.slice(rawBody.byteOffset, rawBody.byteOffset + rawBody.byteLength),
+                    json: async () => JSON.parse(rawBody.toString("utf8"))
+                });
+            });
+            res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.end();
+    });
+}
+
 async function awaitWithTimeout(promise, timeoutMs, timeoutMessage) {
     let timer;
     try {
@@ -283,8 +312,9 @@ test("Media Stream Protection: HTTP streaming acquires and releases lease cleanl
         // Before stream: 0 active readers
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0);
 
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" }
+        const res = await httpRequest({
+            port,
+            path: `/api/media/${reg.id}`
         });
         assert.strictEqual(res.status, 200);
 
@@ -323,22 +353,35 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
-    let reader;
+    let clientReq;
     try {
-        const controller = new AbortController();
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" },
-            signal: controller.signal
+        let firstChunkReceived = false;
+        const chunkPromise = new Promise((resolve) => {
+            clientReq = http.request({
+                host: "127.0.0.1",
+                port,
+                path: `/api/media/${reg.id}`,
+                method: "GET",
+                agent: false,
+                headers: { "Connection": "close" }
+            }, (res) => {
+                res.on("data", (chunk) => {
+                    if (!firstChunkReceived && chunk.length > 0) {
+                        firstChunkReceived = true;
+                        resolve(chunk);
+                    }
+                });
+                res.on("error", () => {});
+            });
+            clientReq.on("error", () => {});
+            clientReq.end();
         });
-        assert.strictEqual(res.status, 200);
 
-        // Read first chunk
-        reader = res.body.getReader();
-        const chunk = await reader.read();
-        assert.ok(chunk.value && chunk.value.length > 0);
+        const chunk = await chunkPromise;
+        assert.ok(chunk && chunk.length > 0);
 
-        // Abort the client connection
-        controller.abort();
+        // Abort the client connection immediately
+        clientReq.destroy();
 
         // Wait for server to process close/abort
         await new Promise((r) => setTimeout(r, 80));
@@ -346,8 +389,8 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
         // Reader count must have been released
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Reader count must be 0 after abort");
     } finally {
-        if (reader) {
-            try { await reader.cancel(); } catch (_) {}
+        if (clientReq && !clientReq.destroyed) {
+            try { clientReq.destroy(); } catch (_) {}
         }
         await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
@@ -410,8 +453,9 @@ test("Media Stream Protection (G1): Missing local file returns 404 MEDIA_NOT_FOU
     try {
         assert.strictEqual(defaultRegistry.getActiveReaderCount(missingFile), 0);
 
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" }
+        const res = await httpRequest({
+            port,
+            path: `/api/media/${reg.id}`
         });
         assert.strictEqual(res.status, 404);
 
@@ -453,8 +497,9 @@ test("Media Stream Protection (G2): Oversized local file returns 413 PAYLOAD_TOO
     };
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" }
+        const res = await httpRequest({
+            port,
+            path: `/api/media/${reg.id}`
         });
         assert.strictEqual(res.status, 413);
 
@@ -501,8 +546,9 @@ test("Media Stream Protection (G3): Unexpected filesystem errors return 500 STRE
     };
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" }
+        const res = await httpRequest({
+            port,
+            path: `/api/media/${reg.id}`
         });
         assert.strictEqual(res.status, 500);
 
@@ -582,26 +628,37 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         return originalCreateReadStream.call(fs, targetPath, options);
     };
 
+    let clientReq;
     try {
-        const controller = new AbortController();
-        const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" },
-            signal: controller.signal
-        }).catch(() => {}); // Catch client-side abort rejection
+        const reqPromise = new Promise((resolve) => {
+            clientReq = http.request({
+                host: "127.0.0.1",
+                port,
+                path: `/api/media/${reg.id}`,
+                method: "GET",
+                agent: false,
+                headers: { "Connection": "close" }
+            }, (res) => {
+                res.on("data", () => {});
+                res.on("end", resolve);
+            });
+            clientReq.on("error", () => resolve());
+            clientReq.end();
+        });
 
         // 1. Wait until server has acquired lease and entered async stat (bounded timeout)
         await awaitWithTimeout(statStarted, 5000, "Stat operation did not start within timeout");
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 1, "Lease must be held while stat is pending");
 
         // 2. Client disconnects before the stat operation completes
-        controller.abort();
+        clientReq.destroy();
 
         // 3. Server observes premature response termination (bounded timeout)
         await awaitWithTimeout(serverDisconnected, 5000, "Server did not observe premature response termination within timeout");
 
         // 4. The stat operation is subsequently allowed to complete
         resumeStat();
-        await fetchPromise;
+        await reqPromise;
 
         // 5. Bounded wait for server cancellation handling to finish lease release
         const start = Date.now();
@@ -619,6 +676,9 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
+        if (clientReq && !clientReq.destroyed) {
+            try { clientReq.destroy(); } catch (_) {}
+        }
         await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
@@ -690,26 +750,37 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
         return originalCreateReadStream.call(fs, targetPath, options);
     };
 
+    let clientReq;
     try {
-        const controller = new AbortController();
-        const fetchPromise = fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
-            headers: { "Connection": "close" },
-            signal: controller.signal
-        }).catch(() => {}); // Catch client-side abort rejection
+        const reqPromise = new Promise((resolve) => {
+            clientReq = http.request({
+                host: "127.0.0.1",
+                port,
+                path: `/api/media/${reg.id}`,
+                method: "GET",
+                agent: false,
+                headers: { "Connection": "close" }
+            }, (res) => {
+                res.on("data", () => {});
+                res.on("end", resolve);
+            });
+            clientReq.on("error", () => resolve());
+            clientReq.end();
+        });
 
         // 1. Wait until server has acquired lease and entered async stat (bounded timeout)
         await awaitWithTimeout(statStarted, 5000, "Stat operation did not start within timeout");
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 1, "Lease must be held while stat is pending");
 
         // 2. Client disconnects before the stat operation completes
-        controller.abort();
+        clientReq.destroy();
 
         // 3. Server observes premature response termination (bounded timeout)
         await awaitWithTimeout(serverDisconnected, 5000, "Server did not observe premature response termination within timeout");
 
         // 4. The stat operation is allowed to complete (with error)
         resumeStat();
-        await fetchPromise;
+        await reqPromise;
 
         // 5. Bounded wait for server cancellation handling to finish lease release
         const start = Date.now();
@@ -727,6 +798,9 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
+        if (clientReq && !clientReq.destroyed) {
+            try { clientReq.destroy(); } catch (_) {}
+        }
         await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
