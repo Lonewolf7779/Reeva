@@ -505,11 +505,13 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
         // Give 50ms for Windows file handle release
         await new Promise(r => setTimeout(r, 60));
         assert.equal(fs.existsSync(tempFile), false);
-
     } finally {
         if (fs.existsSync(tempFile)) {
             try { fs.unlinkSync(tempFile); } catch (_) {}
         }
-        server.close();
+        if (typeof server.closeAllConnections === "function") {
+            server.closeAllConnections();
+        }
+        await new Promise((resolve) => server.close(() => resolve()));
     }
 });

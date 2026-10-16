@@ -373,19 +373,28 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
         child.on("error", reject);
     });
 
-    // Send SIGINT
-    const exitCodePromise = new Promise((resolve) => {
+    // Send SIGTERM
+    const exitCodePromise = new Promise((resolve, reject) => {
+        const killTimeout = setTimeout(() => {
+            try { child.kill("SIGKILL"); } catch (_) {}
+            reject(new Error("Subprocess did not exit within 5000ms after SIGTERM"));
+        }, 5000);
         child.on("exit", (code, signal) => {
+            clearTimeout(killTimeout);
             resolve({ code, signal });
+        });
+        child.on("error", (err) => {
+            clearTimeout(killTimeout);
+            reject(err);
         });
     });
 
-    child.kill("SIGINT");
+    child.kill("SIGTERM");
 
     const result = await exitCodePromise;
     // On Windows, child.kill sends TerminateProcess or exit code 0/1 depending on platform signal emulation
     // Either exit code 0 or null with SIGINT / SIGTERM
-    assert.ok(result.code === 0 || result.signal === "SIGINT" || result.code === null);
+    assert.ok(result.code === 0 || result.signal === "SIGTERM" || result.signal === "SIGINT" || result.code === null);
 });
 
 // =========================================================================
