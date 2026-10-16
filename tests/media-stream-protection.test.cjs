@@ -732,7 +732,5 @@ test.after(() => {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
-    if (process.send) {
-        setTimeout(() => process.exit(0), 100).unref();
-    }
+    setTimeout(() => process.exit(0), 200).unref();
 });
