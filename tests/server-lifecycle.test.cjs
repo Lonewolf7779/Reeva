@@ -1,7 +1,7 @@
 // tests/server-lifecycle.test.cjs — Deterministic Tests for Server Lifecycle, Trust Proxy, and Probes
 "use strict";
 
-const { test, after } = require("node:test");
+const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("http");
 const { spawn } = require("child_process");
@@ -24,23 +24,21 @@ const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapt
 
 const app = require("../server.cjs");
 
-test.before(async () => {
+before(async () => {
     // Settle any in-flight startup scan initiated by server.cjs before starting test suite
     await cleanStaleTempFiles();
 });
 
 async function closeServer(server) {
     if (!server) return;
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
     if (typeof server.closeAllConnections === "function") {
-        server.closeAllConnections();
+        try { server.closeAllConnections(); } catch (_) {}
     }
     if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));
-    }
-    for (const h of process._getActiveHandles()) {
-        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
-            try { h.destroy(); } catch (_) {}
-        }
     }
 }
 
@@ -623,9 +621,4 @@ after(() => {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
-    for (const h of process._getActiveHandles()) {
-        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
-            try { h.destroy(); } catch (_) {}
-        }
-    }
 });

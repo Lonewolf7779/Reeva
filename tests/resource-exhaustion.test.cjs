@@ -1,7 +1,7 @@
 // tests/resource-exhaustion.test.cjs — Automated Tests for Resource Exhaustion Controls
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -441,7 +441,7 @@ test("Concurrency Limiter: Decoupled extraction and stream limiters prevent stre
     resStream1.emit("finish");
 });
 
-test.after(() => {
+after(() => {
     try {
         if (fs.existsSync(process.env.REEVA_TEMP_DIR)) {
             fs.rmSync(process.env.REEVA_TEMP_DIR, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 "use strict";
 
-const test = require("node:test");
+const { test, before, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -34,7 +34,7 @@ function ensureTempDir() {
     return REEVA_TEMP_DIR;
 }
 
-test.before(async () => {
+before(async () => {
     // Settle any in-flight startup scan before starting test suite
     await cleanStaleTempFiles();
 });
@@ -772,7 +772,7 @@ test("Async Cleanup (L5): Incomplete coordinator missing claimDeletion fails saf
     }
 });
 
-test.after(() => {
+after(() => {
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });

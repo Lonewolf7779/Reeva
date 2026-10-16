@@ -98,11 +98,6 @@ async function closeServer(server) {
     if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));
     }
-    for (const h of process._getActiveHandles()) {
-        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
-            try { h.destroy(); } catch (_) {}
-        }
-    }
 }
 
 // ==============================================================================
@@ -815,9 +810,4 @@ after(() => {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
-    for (const h of process._getActiveHandles()) {
-        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
-            try { h.destroy(); } catch (_) {}
-        }
-    }
 });
