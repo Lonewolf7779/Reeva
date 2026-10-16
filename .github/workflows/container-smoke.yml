@@ -1,0 +1,234 @@
+name: Container Build & Production Smoke Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_TAG: reeva:candidate
+  CONTAINER_NAME: reeva-ci-smoke
+  HOST_TEST_PORT: "3100"
+  CONTAINER_PORT: "3000"
+
+jobs:
+  verify-and-smoke-test:
+    name: Node.js 24 Test Suite, Audit & Container Smoke Test (linux/amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify x86-64 runner architecture
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          echo "Runner architecture: ${ARCH}"
+          if [ "${ARCH}" != "x86_64" ]; then
+            echo "ERROR: Expected x86_64 runner, got '${ARCH}'." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Verify Node.js 24 runtime version
+        run: |
+          set -euo pipefail
+          NODE_VER="$(node --version)"
+          echo "Active Node.js version: ${NODE_VER}"
+          case "${NODE_VER}" in
+            v24.*) ;;
+            *)
+              echo "ERROR: Expected Node.js v24.x, got '${NODE_VER}'." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install dependencies cleanly from lockfile
+        run: npm ci
+
+      - name: Run full automated test suite on Node.js 24
+        run: npm test
+
+      - name: Run npm security audit against committed lockfile
+        run: npm audit --audit-level=low
+
+      - name: Build production container image (linux/amd64)
+        run: |
+          set -euo pipefail
+          docker build --platform=linux/amd64 -t "${IMAGE_TAG}" .
+
+      - name: Start production container with bounded CPU and memory
+        run: |
+          set -euo pipefail
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --memory=1g \
+            --cpus=1.0 \
+            -p "127.0.0.1:${HOST_TEST_PORT}:${CONTAINER_PORT}" \
+            -e NODE_ENV=production \
+            -e PORT="${CONTAINER_PORT}" \
+            "${IMAGE_TAG}"
+
+      - name: Verify non-root execution, binaries, and writable REEVA_TEMP_DIR
+        run: |
+          set -euo pipefail
+          CONTAINER_UID="$(docker exec "${CONTAINER_NAME}" id -u)"
+          CONTAINER_USER="$(docker exec "${CONTAINER_NAME}" id -un)"
+          echo "Container running as user=${CONTAINER_USER} (uid=${CONTAINER_UID})"
+          if [ "${CONTAINER_UID}" = "0" ] || [ "${CONTAINER_USER}" != "node" ]; then
+            echo "ERROR: Container must run as non-root 'node' user." >&2
+            exit 1
+          fi
+
+          docker exec "${CONTAINER_NAME}" /usr/local/bin/yt-dlp --version
+          docker exec "${CONTAINER_NAME}" /usr/local/bin/ffmpeg -version
+          docker exec "${CONTAINER_NAME}" test -d /var/reeva/media
+          docker exec "${CONTAINER_NAME}" test -w /var/reeva/media
+
+      - name: Wait for GET /health and GET /ready to succeed
+        run: |
+          set -euo pipefail
+          BASE_URL="http://127.0.0.1:${HOST_TEST_PORT}"
+          READY=0
+          for i in $(seq 1 30); do
+            HEALTH_CODE="$(curl -s -o /tmp/reeva_health.json -w '%{http_code}' "${BASE_URL}/health" || true)"
+            READY_CODE="$(curl -s -o /tmp/reeva_ready.json -w '%{http_code}' "${BASE_URL}/ready" || true)"
+            if [ "${HEALTH_CODE}" = "200" ] && [ "${READY_CODE}" = "200" ]; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "${READY}" -ne 1 ]; then
+            echo "ERROR: Container did not become healthy and ready within 30s." >&2
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            const assert = require("assert");
+            const health = JSON.parse(fs.readFileSync("/tmp/reeva_health.json", "utf8"));
+            const ready = JSON.parse(fs.readFileSync("/tmp/reeva_ready.json", "utf8"));
+            assert.strictEqual(health.status, "ok", "Expected /health status === ok");
+            assert.strictEqual(typeof health.timestamp, "string", "Expected /health timestamp string");
+            assert.strictEqual(ready.status, "ready", "Expected /ready status === ready");
+            console.log("Verified /health and /ready responses:", { health, ready });
+          '
+
+      - name: Verify main application page and security headers
+        run: |
+          set -euo pipefail
+          BASE_URL="http://127.0.0.1:${HOST_TEST_PORT}"
+          HTTP_CODE="$(curl -s -D /tmp/reeva_index.headers -o /tmp/reeva_index.html -w '%{http_code}' "${BASE_URL}/")"
+          if [ "${HTTP_CODE}" != "200" ]; then
+            echo "ERROR: Expected HTTP 200 for GET /, got ${HTTP_CODE}" >&2
+            exit 1
+          fi
+
+          grep -qi "^content-type:.*text/html" /tmp/reeva_index.headers
+          grep -qi "^x-frame-options:.*DENY" /tmp/reeva_index.headers
+          grep -qi "^x-content-type-options:.*nosniff" /tmp/reeva_index.headers
+          grep -qi "^content-security-policy:" /tmp/reeva_index.headers
+          grep -q "<title>" /tmp/reeva_index.html
+          grep -qi "Reeva" /tmp/reeva_index.html
+
+      - name: Verify malformed and unsupported media URLs are rejected safely
+        run: |
+          set -euo pipefail
+          BASE_URL="http://127.0.0.1:${HOST_TEST_PORT}"
+
+          MALFORMED_CODE="$(curl -s -o /tmp/reeva_malformed.json -w '%{http_code}' "${BASE_URL}/api/download/youtube?url=not-a-valid-url")"
+          if [ "${MALFORMED_CODE}" != "400" ]; then
+            echo "ERROR: Expected HTTP 400 for malformed URL, got ${MALFORMED_CODE}" >&2
+            cat /tmp/reeva_malformed.json >&2
+            exit 1
+          fi
+
+          UNSUPPORTED_CODE="$(curl -s -o /tmp/reeva_unsupported.json -w '%{http_code}' "${BASE_URL}/api/download/youtube?url=https%3A%2F%2Fexample.com%2Fvideo")"
+          if [ "${UNSUPPORTED_CODE}" != "400" ]; then
+            echo "ERROR: Expected HTTP 400 for unsupported media URL, got ${UNSUPPORTED_CODE}" >&2
+            cat /tmp/reeva_unsupported.json >&2
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            const assert = require("assert");
+            for (const file of ["/tmp/reeva_malformed.json", "/tmp/reeva_unsupported.json"]) {
+              const raw = fs.readFileSync(file, "utf8");
+              const body = JSON.parse(raw);
+              assert.ok(body.error && typeof body.error.code === "string", "Expected structured error.code");
+              assert.ok(typeof body.error.message === "string" && body.error.message.length > 0, "Expected error.message");
+              assert.ok(!raw.includes("/app/"), "Error payload must not leak internal container paths");
+              assert.ok(!raw.includes("at "), "Error payload must not leak stack traces");
+            }
+            console.log("Verified safe rejection for malformed and unsupported URLs.");
+          '
+
+      - name: Verify unknown media ID returns HTTP 404
+        run: |
+          set -euo pipefail
+          BASE_URL="http://127.0.0.1:${HOST_TEST_PORT}"
+          UNKNOWN_CODE="$(curl -s -o /tmp/reeva_unknown_media.json -w '%{http_code}' "${BASE_URL}/api/media/nonexistent_media_id_00000000")"
+          if [ "${UNKNOWN_CODE}" != "404" ]; then
+            echo "ERROR: Expected HTTP 404 for unknown media ID, got ${UNKNOWN_CODE}" >&2
+            cat /tmp/reeva_unknown_media.json >&2
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            const assert = require("assert");
+            const body = JSON.parse(fs.readFileSync("/tmp/reeva_unknown_media.json", "utf8"));
+            assert.strictEqual(body.error.code, "MEDIA_NOT_FOUND", "Expected MEDIA_NOT_FOUND code");
+            console.log("Verified HTTP 404 MEDIA_NOT_FOUND for unknown media ID.");
+          '
+
+      - name: Stop container and verify graceful SIGTERM shutdown
+        run: |
+          set -euo pipefail
+          docker stop --time 15 "${CONTAINER_NAME}"
+
+          EXIT_CODE="$(docker inspect "${CONTAINER_NAME}" --format='{{.State.ExitCode}}')"
+          echo "Container exit code after SIGTERM: ${EXIT_CODE}"
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "ERROR: Expected container exit code 0 after SIGTERM, got ${EXIT_CODE}" >&2
+            exit 1
+          fi
+
+          docker logs "${CONTAINER_NAME}" > /tmp/reeva_container.log 2>&1
+          cat /tmp/reeva_container.log
+          grep -q "Received SIGTERM. Starting graceful shutdown..." /tmp/reeva_container.log
+          grep -q "Graceful shutdown completed successfully." /tmp/reeva_container.log
+
+      - name: Collect container diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Docker Container Status ==="
+          docker ps -a --filter "name=${CONTAINER_NAME}" || true
+          echo "=== Docker Container Inspect ==="
+          docker inspect "${CONTAINER_NAME}" || true
+          echo "=== Docker Container Logs ==="
+          docker logs "${CONTAINER_NAME}" || true
+
+      - name: Clean up temporary container and test files
+        if: always()
+        run: |
+          docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          rm -f /tmp/reeva_health.json /tmp/reeva_ready.json /tmp/reeva_index.headers /tmp/reeva_index.html /tmp/reeva_malformed.json /tmp/reeva_unsupported.json /tmp/reeva_unknown_media.json /tmp/reeva_container.log || true

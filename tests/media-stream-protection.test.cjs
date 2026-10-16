@@ -5,8 +5,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const http = require("http");
 const crypto = require("crypto");
+
+// Isolate temporary directory for this test worker to prevent cross-worker test interference
+process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-msp-${process.pid}`);
 
 const { MediaRegistry, defaultRegistry } = require("../lib/media-registry.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
@@ -17,6 +21,11 @@ function ensureTempDir() {
         fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
     }
 }
+
+test.before(async () => {
+    // Settle any in-flight startup scan initiated by server.cjs before starting test suite
+    await cleanStaleTempFiles();
+});
 
 async function awaitWithTimeout(promise, timeoutMs, timeoutMessage) {
     let timer;
@@ -674,4 +683,12 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
             try { fs.unlinkSync(testFile); } catch (_) {}
         }
     }
+});
+
+test.after(() => {
+    try {
+        if (fs.existsSync(REEVA_TEMP_DIR)) {
+            fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
+        }
+    } catch (_) {}
 });

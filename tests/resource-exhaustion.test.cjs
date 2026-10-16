@@ -3,6 +3,13 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+// Isolate temporary directory for this test worker to prevent cross-worker test interference
+process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-resex-${process.pid}`);
+
 const { StreamMeter, ResponseTooLargeError } = require("../lib/http-client.cjs");
 const { createConcurrencyLimiter } = require("../lib/concurrency-limiter.cjs");
 const { BoundedCache } = require("../lib/cache.cjs");
@@ -432,6 +439,14 @@ test("Concurrency Limiter: Decoupled extraction and stream limiters prevent stre
     resExt1.emit("finish");
     resExt2.emit("finish");
     resStream1.emit("finish");
+});
+
+test.after(() => {
+    try {
+        if (fs.existsSync(process.env.REEVA_TEMP_DIR)) {
+            fs.rmSync(process.env.REEVA_TEMP_DIR, { recursive: true, force: true });
+        }
+    } catch (_) {}
 });
 
 

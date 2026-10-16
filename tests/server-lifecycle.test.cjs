@@ -7,6 +7,10 @@ const http = require("http");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
+
+// Isolate temporary directory for this test worker to prevent cross-worker test interference
+process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-lifecycle-${process.pid}`);
 
 const {
     parseTrustProxy,
@@ -16,9 +20,14 @@ const {
 } = require("../lib/config.cjs");
 
 const { defaultRegistry } = require("../lib/media-registry.cjs");
-const { REEVA_TEMP_DIR } = require("../lib/extraction/adapters/youtube.cjs");
+const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
 
 const app = require("../server.cjs");
+
+test.before(async () => {
+    // Settle any in-flight startup scan initiated by server.cjs before starting test suite
+    await cleanStaleTempFiles();
+});
 
 // =========================================================================
 // 1. TRUST_PROXY Strict Parser Tests
@@ -570,4 +579,12 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
             try { fs.unlinkSync(testFile); } catch (_) {}
         }
     }
+});
+
+test.after(() => {
+    try {
+        if (fs.existsSync(REEVA_TEMP_DIR)) {
+            fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
+        }
+    } catch (_) {}
 });

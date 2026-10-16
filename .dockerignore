@@ -1,0 +1,76 @@
+# ==============================================================================
+# Reeva Docker Build-Context Protection (.dockerignore)
+# ==============================================================================
+
+# Version control and CI metadata
+.git
+.git/
+.gitignore
+.github
+.github/
+
+# Environment variables and secret overrides
+.env
+.env.*
+!.env.example
+
+# Node.js dependency directories and package manager caches
+node_modules/
+**/node_modules/
+.npm/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test suite and temporary test workspaces
+tests/
+temp/
+.tmp/
+.temp/
+coverage/
+
+# Local runtime media, temporary artifacts, and caches
+reeva_media/
+cache/
+dist/
+build/
+logs/
+*.log
+*.mp4
+*.m4a
+*.webm
+*.mkv
+*.avi
+*.mov
+*.mp3
+*.part
+*.ytdl
+
+# Portable dependency archives and standalone host binaries
+tools/
+*.zip
+*.tar
+*.tar.gz
+*.tar.xz
+*.7z
+*.exe
+yt-dlp
+yt-dlp_*
+ffmpeg
+ffprobe
+ffplay
+
+# Editor, IDE, and OS metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.bak
+*.old
+
+# Docker and documentation files not needed at runtime
+Dockerfile
+.dockerignore
+docker-compose*.yml
+*.md
