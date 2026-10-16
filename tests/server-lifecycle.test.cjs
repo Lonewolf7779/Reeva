@@ -42,6 +42,35 @@ async function closeServer(server) {
     }
 }
 
+function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            host: "127.0.0.1",
+            port,
+            path: reqPath,
+            method,
+            agent: false,
+            headers: { "Connection": "close", ...headers }
+        }, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+                const rawBody = Buffer.concat(chunks);
+                resolve({
+                    status: res.statusCode,
+                    headers: res.headers,
+                    body: rawBody,
+                    arrayBuffer: async () => rawBody.buffer.slice(rawBody.byteOffset, rawBody.byteOffset + rawBody.byteLength),
+                    json: async () => JSON.parse(rawBody.toString("utf8"))
+                });
+            });
+            res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.end();
+    });
+}
+
 // =========================================================================
 // 1. TRUST_PROXY Strict Parser Tests
 // =========================================================================
@@ -156,7 +185,7 @@ test("GET /health: Returns 200 with status ok and timestamp", async () => {
     const port = server.address().port;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        const res = await httpRequest({ port, path: "/health" });
         assert.strictEqual(res.status, 200);
         const data = await res.json();
         assert.strictEqual(data.status, "ok");
@@ -176,7 +205,7 @@ test("GET /ready: Returns 200 status ready when healthy", async () => {
     const port = server.address().port;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/ready`);
+        const res = await httpRequest({ port, path: "/ready" });
         assert.strictEqual(res.status, 200);
         const data = await res.json();
         assert.strictEqual(data.status, "ready");
@@ -197,14 +226,14 @@ test("GET /ready: In production mode, returns 503 until preflight completes", as
     try {
         // Preflight not marked complete yet
         app.setIsPreflightComplete(false);
-        const res1 = await fetch(`http://127.0.0.1:${port}/ready`);
+        const res1 = await httpRequest({ port, path: "/ready" });
         assert.strictEqual(res1.status, 503);
         const data1 = await res1.json();
         assert.strictEqual(data1.status, "initializing");
 
         // Mark preflight complete
         app.setIsPreflightComplete(true);
-        const res2 = await fetch(`http://127.0.0.1:${port}/ready`);
+        const res2 = await httpRequest({ port, path: "/ready" });
         assert.strictEqual(res2.status, 200);
         const data2 = await res2.json();
         assert.strictEqual(data2.status, "ready");
@@ -234,7 +263,7 @@ test("GET /ready: Returns 503 during graceful shutdown", async () => {
         const shutdownPromise = app.gracefulShutdown("TEST_SHUTDOWN", { timeoutMs: 500, server });
 
         // /ready probe should immediately report 503
-        const res = await fetch(`http://127.0.0.1:${port}/ready`);
+        const res = await httpRequest({ port, path: "/ready" });
         assert.strictEqual(res.status, 503);
         const data = await res.json();
         assert.strictEqual(data.status, "shutting_down");
@@ -259,7 +288,9 @@ test("req.ip resolution with TRUST_PROXY = 1", async () => {
     const port = server.address().port;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/probe-ip`, {
+        const res = await httpRequest({
+            port,
+            path: "/probe-ip",
             headers: {
                 "X-Forwarded-For": "198.51.100.42, 10.0.0.1"
             }
@@ -289,7 +320,10 @@ test("New extractions rejected with 503 when server is shutting down", async () 
         // Initiate shutdown
         const shutdownPromise = app.gracefulShutdown("TEST_SHUTDOWN", { timeoutMs: 500, server });
 
-        const res = await fetch(`http://127.0.0.1:${port}/api/download/instagram?url=https://www.instagram.com/p/test`);
+        const res = await httpRequest({
+            port,
+            path: "/api/download/instagram?url=https://www.instagram.com/p/test"
+        });
         assert.strictEqual(res.status, 503);
         const data = await res.json();
         assert.strictEqual(data.error.code, "SERVICE_UNAVAILABLE");
@@ -422,13 +456,13 @@ test("New streaming requests rejected with 503 when server is shutting down", as
         const shutdownPromise = app.gracefulShutdown("TEST_SHUTDOWN", { timeoutMs: 500, server });
 
         // /api/media/:mediaId
-        const resMedia = await fetch(`http://127.0.0.1:${port}/api/media/med_1234567890abcdef`);
+        const resMedia = await httpRequest({ port, path: "/api/media/med_1234567890abcdef" });
         assert.strictEqual(resMedia.status, 503);
         const dataMedia = await resMedia.json();
         assert.strictEqual(dataMedia.error.code, "SERVICE_UNAVAILABLE");
 
         // /api/proxy
-        const resProxy = await fetch(`http://127.0.0.1:${port}/api/proxy?id=med_1234567890abcdef`);
+        const resProxy = await httpRequest({ port, path: "/api/proxy?id=med_1234567890abcdef" });
         assert.strictEqual(resProxy.status, 503);
         const dataProxy = await resProxy.json();
         assert.strictEqual(dataProxy.error.code, "SERVICE_UNAVAILABLE");
@@ -462,7 +496,7 @@ test("Active local-file stream is tracked in activeStreamControllers and complet
 
     try {
         // Stream the file
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await httpRequest({ port, path: `/api/media/${reg.id}` });
         assert.strictEqual(res.status, 200);
         const arrayBuf = await res.arrayBuffer();
         assert.strictEqual(arrayBuf.byteLength, 16 * 1024);
@@ -506,15 +540,41 @@ test("Active local-file stream still active at deadline is aborted, freeing serv
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
-    let reader = null;
+    let clientSocket = null;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
-        assert.strictEqual(res.status, 200);
+        const clientReq = http.request({
+            host: "127.0.0.1",
+            port,
+            path: `/api/media/${reg.id}`,
+            method: "GET",
+            agent: false,
+            headers: { "Connection": "close" }
+        });
 
-        reader = res.body.getReader();
-        const firstChunk = await reader.read();
-        assert.ok(firstChunk.value && firstChunk.value.length > 0);
+        const res = await new Promise((resolve, reject) => {
+            clientReq.on("response", resolve);
+            clientReq.on("error", reject);
+            clientReq.end();
+        });
+
+        assert.strictEqual(res.statusCode, 200);
+
+        // Read at least one chunk to ensure the stream is flowing
+        await new Promise((resolve, reject) => {
+            res.once("data", (chunk) => {
+                assert.ok(chunk && chunk.length > 0);
+                res.pause();
+                if (clientReq.socket) {
+                    clientReq.socket.pause();
+                }
+                resolve();
+            });
+            res.once("error", reject);
+        });
+
+        // Capture client socket so we can explicitly destroy it in cleanup
+        clientSocket = clientReq.socket;
 
         // Verify stream is actively tracked
         assert.strictEqual(app.getActiveStreamControllers().size, 1);
@@ -528,15 +588,14 @@ test("Active local-file stream still active at deadline is aborted, freeing serv
         assert.ok(shutdownDuration >= 140, `Shutdown should wait for grace deadline (${shutdownDuration}ms)`);
         assert.strictEqual(app.getActiveStreamControllers().size, 0, "All stream controllers must be cleared after abort");
 
-
         // Temporary file is safely unlinked with zero orphan disk leaks
         assert.strictEqual(fs.existsSync(testFile), false, "Temporary media artifact must be cleaned up without lock errors");
 
         // Server socket is completely closed
         assert.strictEqual(server.listening, false, "Server listener must be closed");
     } finally {
-        if (reader) {
-            try { await reader.cancel(); } catch (_) {}
+        if (clientSocket && !clientSocket.destroyed) {
+            try { clientSocket.destroy(); } catch (_) {}
         }
         app.resetShutdownState();
         await closeServer(server);
@@ -588,14 +647,39 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
-    let reader = null;
+    let clientSocket = null;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
-        assert.strictEqual(res.status, 200);
+        const clientReq = http.request({
+            host: "127.0.0.1",
+            port,
+            path: `/api/media/${reg.id}`,
+            method: "GET",
+            agent: false,
+            headers: { "Connection": "close" }
+        });
 
-        reader = res.body.getReader();
-        await reader.read(); // Read first chunk to ensure stream has started
+        const res = await new Promise((resolve, reject) => {
+            clientReq.on("response", resolve);
+            clientReq.on("error", reject);
+            clientReq.end();
+        });
+
+        assert.strictEqual(res.statusCode, 200);
+
+        // Read at least one chunk to ensure stream has started
+        await new Promise((resolve, reject) => {
+            res.once("data", () => {
+                res.pause();
+                if (clientReq.socket) {
+                    clientReq.socket.pause();
+                }
+                resolve();
+            });
+            res.once("error", reject);
+        });
+
+        clientSocket = clientReq.socket;
 
         // Trigger shutdown to abort the active stream
         await app.gracefulShutdown("CONCURRENCY_ABORT_TEST", { timeoutMs: 100, server });
@@ -604,8 +688,8 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
         assert.strictEqual(app.getActiveStreamControllers().size, 0);
         assert.strictEqual(server.listening, false);
     } finally {
-        if (reader) {
-            try { await reader.cancel(); } catch (_) {}
+        if (clientSocket && !clientSocket.destroyed) {
+            try { clientSocket.destroy(); } catch (_) {}
         }
         app.resetShutdownState();
         await closeServer(server);
