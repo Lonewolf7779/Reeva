@@ -1,7 +1,7 @@
 // tests/production-preflight.test.cjs — Deterministic Tests for Production Binary and Storage Preflight
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -331,6 +331,6 @@ test("startServer: Blocks listen and throws if production preflight fails", asyn
     }
 });
 
-test.after(() => {
+after(() => {
     removeTestDir();
 });

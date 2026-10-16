@@ -1,7 +1,7 @@
 // tests/server-lifecycle.test.cjs — Deterministic Tests for Server Lifecycle, Trust Proxy, and Probes
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("http");
 const { spawn } = require("child_process");
@@ -36,6 +36,11 @@ async function closeServer(server) {
     }
     if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));
+    }
+    for (const h of process._getActiveHandles()) {
+        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
+            try { h.destroy(); } catch (_) {}
+        }
     }
 }
 
@@ -612,12 +617,15 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
     }
 });
 
-test.after(async () => {
+after(() => {
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    process.exit(0);
+    for (const h of process._getActiveHandles()) {
+        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
+            try { h.destroy(); } catch (_) {}
+        }
+    }
 });

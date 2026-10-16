@@ -1,7 +1,7 @@
 // tests/media-stream-protection.test.cjs — Deterministic Regression Tests for Active Local Media File Protection
 "use strict";
 
-const test = require("node:test");
+const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -22,7 +22,7 @@ function ensureTempDir() {
     }
 }
 
-test.before(async () => {
+before(async () => {
     // Settle any in-flight startup scan initiated by server.cjs before starting test suite
     await cleanStaleTempFiles();
 });
@@ -68,6 +68,11 @@ async function closeServer(server) {
     }
     if (server.listening) {
         await new Promise((resolve) => server.close(() => resolve()));
+    }
+    for (const h of process._getActiveHandles()) {
+        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
+            try { h.destroy(); } catch (_) {}
+        }
     }
 }
 
@@ -318,6 +323,7 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
+    let reader;
     try {
         const controller = new AbortController();
         const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`, {
@@ -327,7 +333,7 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
         assert.strictEqual(res.status, 200);
 
         // Read first chunk
-        const reader = res.body.getReader();
+        reader = res.body.getReader();
         const chunk = await reader.read();
         assert.ok(chunk.value && chunk.value.length > 0);
 
@@ -340,6 +346,9 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
         // Reader count must have been released
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Reader count must be 0 after abort");
     } finally {
+        if (reader) {
+            try { await reader.cancel(); } catch (_) {}
+        }
         await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
@@ -726,12 +735,15 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     }
 });
 
-test.after(async () => {
+after(() => {
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    process.exit(0);
+    for (const h of process._getActiveHandles()) {
+        if (h && typeof h.destroy === "function" && h.fd !== 0 && h.fd !== 1 && h.fd !== 2) {
+            try { h.destroy(); } catch (_) {}
+        }
+    }
 });
