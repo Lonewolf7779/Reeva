@@ -29,6 +29,16 @@ test.before(async () => {
     await cleanStaleTempFiles();
 });
 
+async function closeServer(server) {
+    if (!server) return;
+    if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+    }
+    if (server.listening) {
+        await new Promise((resolve) => server.close(() => resolve()));
+    }
+}
+
 // =========================================================================
 // 1. TRUST_PROXY Strict Parser Tests
 // =========================================================================
@@ -152,7 +162,7 @@ test("GET /health: Returns 200 with status ok and timestamp", async () => {
         assert.strictEqual(data.env, undefined);
         assert.strictEqual(data.config, undefined);
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -168,7 +178,7 @@ test("GET /ready: Returns 200 status ready when healthy", async () => {
         const data = await res.json();
         assert.strictEqual(data.status, "ready");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -202,7 +212,7 @@ test("GET /ready: In production mode, returns 503 until preflight completes", as
             delete process.env.NODE_ENV;
         }
         app.resetShutdownState();
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -229,7 +239,7 @@ test("GET /ready: Returns 503 during graceful shutdown", async () => {
         await shutdownPromise;
     } finally {
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -254,7 +264,7 @@ test("req.ip resolution with TRUST_PROXY = 1", async () => {
         const data = await res.json();
         assert.strictEqual(data.ip, "10.0.0.1");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -284,7 +294,7 @@ test("New extractions rejected with 503 when server is shutting down", async () 
         await shutdownPromise;
     } finally {
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -302,7 +312,7 @@ test("Graceful shutdown is idempotent", async () => {
         assert.strictEqual(app.getIsShuttingDown(), true);
     } finally {
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -410,7 +420,7 @@ test("New streaming requests rejected with 503 when server is shutting down", as
         await shutdownPromise;
     } finally {
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -454,7 +464,7 @@ test("Active local-file stream is tracked in activeStreamControllers and complet
         assert.ok(elapsed < 1000, `Shutdown should finish immediately after drain, elapsed: ${elapsed}ms`);
     } finally {
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }
@@ -467,7 +477,7 @@ test("Active local-file stream still active at deadline is aborted, freeing serv
         fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
     }
     const testFile = path.join(REEVA_TEMP_DIR, `test_stream_timeout_${Date.now()}.mp4`);
-    fs.writeFileSync(testFile, Buffer.alloc(1024 * 1024, "B")); // 1 MB file
+    fs.writeFileSync(testFile, Buffer.alloc(16 * 1024 * 1024, "B")); // 16 MB file (exceeds OS loopback TCP buffer)
 
     const reg = defaultRegistry.registerMedia({
         upstreamUrl: "https://www.instagram.com/p/test2",
@@ -480,12 +490,13 @@ test("Active local-file stream still active at deadline is aborted, freeing serv
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
+    let reader = null;
 
     try {
         const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
         assert.strictEqual(res.status, 200);
 
-        const reader = res.body.getReader();
+        reader = res.body.getReader();
         const firstChunk = await reader.read();
         assert.ok(firstChunk.value && firstChunk.value.length > 0);
 
@@ -508,8 +519,11 @@ test("Active local-file stream still active at deadline is aborted, freeing serv
         // Server socket is completely closed
         assert.strictEqual(server.listening, false, "Server listener must be closed");
     } finally {
+        if (reader) {
+            try { await reader.cancel(); } catch (_) {}
+        }
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }
@@ -545,7 +559,7 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
         fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
     }
     const testFile = path.join(REEVA_TEMP_DIR, `test_stream_concurrency_${Date.now()}.mp4`);
-    fs.writeFileSync(testFile, Buffer.alloc(512 * 1024, "C")); // 512 KB
+    fs.writeFileSync(testFile, Buffer.alloc(16 * 1024 * 1024, "C")); // 16 MB file (exceeds OS loopback TCP buffer)
 
     const reg = defaultRegistry.registerMedia({
         upstreamUrl: "https://www.instagram.com/p/test3",
@@ -558,12 +572,13 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
+    let reader = null;
 
     try {
         const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
         assert.strictEqual(res.status, 200);
 
-        const reader = res.body.getReader();
+        reader = res.body.getReader();
         await reader.read(); // Read first chunk to ensure stream has started
 
         // Trigger shutdown to abort the active stream
@@ -573,8 +588,11 @@ test("Concurrency slot release when stream is aborted by shutdown", async () => 
         assert.strictEqual(app.getActiveStreamControllers().size, 0);
         assert.strictEqual(server.listening, false);
     } finally {
+        if (reader) {
+            try { await reader.cancel(); } catch (_) {}
+        }
         app.resetShutdownState();
-        if (server.listening) server.close();
+        await closeServer(server);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }

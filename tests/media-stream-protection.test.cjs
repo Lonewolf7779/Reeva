@@ -41,6 +41,16 @@ async function awaitWithTimeout(promise, timeoutMs, timeoutMessage) {
     }
 }
 
+async function closeServer(server) {
+    if (!server) return;
+    if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+    }
+    if (server.listening) {
+        await new Promise((resolve) => server.close(() => resolve()));
+    }
+}
+
 // ==============================================================================
 // TEST A: TTL EXPIRATION DURING ACTIVE STREAMING
 // ==============================================================================
@@ -264,7 +274,7 @@ test("Media Stream Protection: HTTP streaming acquires and releases lease cleanl
         defaultRegistry.deleteMedia(reg.id);
         assert.strictEqual(fs.existsSync(testFile), false, "File must be unlinked when no readers are active");
     } finally {
-        server.close();
+        await closeServer(server);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }
@@ -307,7 +317,7 @@ test("Media Stream Protection: HTTP client abort releases lease immediately", as
         // Reader count must have been released
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Reader count must be 0 after abort");
     } finally {
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
@@ -379,7 +389,7 @@ test("Media Stream Protection (G1): Missing local file returns 404 MEDIA_NOT_FOU
         await new Promise((r) => setTimeout(r, 40));
         assert.strictEqual(defaultRegistry.getActiveReaderCount(missingFile), 0, "Lease must be released on missing file");
     } finally {
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
     }
 });
@@ -420,7 +430,7 @@ test("Media Stream Protection (G2): Oversized local file returns 413 PAYLOAD_TOO
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released on oversized file");
     } finally {
         fs.promises.stat = originalStat;
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
@@ -466,7 +476,7 @@ test("Media Stream Protection (G3): Unexpected filesystem errors return 500 STRE
         assert.strictEqual(defaultRegistry.getActiveReaderCount(testFile), 0, "Lease must be released on filesystem error");
     } finally {
         fs.promises.stat = originalStat;
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
@@ -570,7 +580,7 @@ test("Media Stream Protection (G4): Client abort while async stat is pending rel
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
@@ -677,7 +687,7 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
         fs.promises.stat = originalStat;
         fs.createReadStream = originalCreateReadStream;
         if (resumeStat) resumeStat();
-        server.close();
+        await closeServer(server);
         defaultRegistry.deleteMedia(reg.id);
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
