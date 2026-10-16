@@ -726,10 +726,12 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     }
 });
 
-test.after(() => {
+test.after(async () => {
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
         }
     } catch (_) {}
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    process.exit(0);
 });
