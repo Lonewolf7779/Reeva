@@ -357,44 +357,48 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
     });
 
     let stdoutData = "";
-    child.stdout.on("data", (chunk) => {
-        stdoutData += chunk.toString();
-    });
-
-    // Wait for the server to log live message
-    await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("Timeout waiting for child server startup")), 5000);
+    try {
         child.stdout.on("data", (chunk) => {
-            if (chunk.toString().includes("Reeva backend is live")) {
-                clearTimeout(timeout);
-                resolve();
-            }
+            stdoutData += chunk.toString();
         });
-        child.on("error", reject);
-    });
 
-    // Send SIGTERM
-    const exitCodePromise = new Promise((resolve, reject) => {
-        const killTimeout = setTimeout(() => {
-            try { child.kill("SIGKILL"); } catch (_) {}
-            reject(new Error("Subprocess did not exit within 5000ms after SIGTERM"));
-        }, 5000);
-        child.on("exit", (code, signal) => {
-            clearTimeout(killTimeout);
-            resolve({ code, signal });
+        // Wait for the server to log live message
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Timeout waiting for child server startup")), 5000);
+            child.stdout.on("data", (chunk) => {
+                if (chunk.toString().includes("Reeva backend is live")) {
+                    clearTimeout(timeout);
+                    resolve();
+                }
+            });
+            child.on("error", reject);
         });
-        child.on("error", (err) => {
-            clearTimeout(killTimeout);
-            reject(err);
+
+        // Send SIGTERM
+        const exitCodePromise = new Promise((resolve, reject) => {
+            const killTimeout = setTimeout(() => {
+                try { child.kill("SIGKILL"); } catch (_) {}
+                reject(new Error("Subprocess did not exit within 5000ms after SIGTERM"));
+            }, 5000);
+            child.on("exit", (code, signal) => {
+                clearTimeout(killTimeout);
+                resolve({ code, signal });
+            });
+            child.on("error", (err) => {
+                clearTimeout(killTimeout);
+                reject(err);
+            });
         });
-    });
 
-    child.kill("SIGTERM");
+        child.kill("SIGTERM");
 
-    const result = await exitCodePromise;
-    // On Windows, child.kill sends TerminateProcess or exit code 0/1 depending on platform signal emulation
-    // Either exit code 0 or null with SIGINT / SIGTERM
-    assert.ok(result.code === 0 || result.signal === "SIGTERM" || result.signal === "SIGINT" || result.code === null);
+        const result = await exitCodePromise;
+        // On Windows, child.kill sends TerminateProcess or exit code 0/1 depending on platform signal emulation
+        // Either exit code 0 or null with SIGINT / SIGTERM
+        assert.ok(result.code === 0 || result.signal === "SIGTERM" || result.signal === "SIGINT" || result.code === null);
+    } finally {
+        try { child.kill("SIGKILL"); } catch (_) {}
+    }
 });
 
 // =========================================================================
