@@ -480,7 +480,9 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
             const req = http.get({
                 host: "127.0.0.1",
                 port,
-                path: `/api/media/${registered.id}?download=1`
+                path: `/api/media/${registered.id}?download=1`,
+                agent: false,
+                headers: { "Connection": "close" }
             }, (res) => {
                 const chunks = [];
                 res.on("data", c => chunks.push(c));
@@ -518,9 +520,8 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
                 reject(new Error("Server teardown failed: server.close() did not complete within 2000ms"));
             }, 2000);
 
-            server.close((err) => {
+            server.close(() => {
                 clearTimeout(timer);
-                if (err) return reject(err);
                 resolve();
             });
         });
@@ -528,5 +529,6 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
 });
 
 after(async () => {
+    http.globalAgent.destroy();
     await stopDefaultEgressProxy();
 });

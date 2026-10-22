@@ -1015,7 +1015,9 @@ test("Production Endpoint: Actual serverApp rejects insecure HTTP protocol with 
                 port,
                 path: "/api/download/instagram?url=http://www.instagram.com/p/test123",
                 method: "GET",
+                agent: false,
                 headers: {
+                    "Connection": "close",
                     "X-Request-Id": testReqId
                 }
             }, (res) => {
