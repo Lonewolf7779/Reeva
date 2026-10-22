@@ -352,7 +352,10 @@ test("Egress Redirects: Blocks redirect from public source to 127.0.0.1 internal
         assert.ok(res.includes("403 Forbidden"), `Expected 403 Forbidden, got: ${res}`);
         assert.equal(secretAccessed, false, "Internal secret server was reached through proxy redirect!");
     } finally {
-        secretServer.close();
+        if (typeof secretServer.closeAllConnections === "function") {
+            try { secretServer.closeAllConnections(); } catch (_) {}
+        }
+        await new Promise(r => secretServer.close(r));
         await proxy.close();
     }
 });

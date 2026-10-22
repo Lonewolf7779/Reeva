@@ -20,7 +20,8 @@ const {
     SecurityHTTPError,
     StreamMeter,
     isPermittedMediaContentType,
-    secureFetch
+    secureFetch,
+    destroyHttpAgents
 } = require("./lib/http-client.cjs");
 
 const { defaultRegistry } = require("./lib/media-registry.cjs");
@@ -768,6 +769,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         const { response } = fetchHandle;
 
         if (!response.ok) {
+            fetchHandle.abort();
             logStreamTerminal("error", `UPSTREAM_HTTP_${response.status}`);
             return res.status(502).json({
                 error: {
@@ -1163,6 +1165,7 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
         // 5. Clean up temporary files, registry entries, and egress proxy safely
         try {
             await stopDefaultEgressProxy();
+            destroyHttpAgents();
         } catch (proxyErr) {
             logger.error({ message: `Error stopping egress proxy during shutdown: ${proxyErr.message}` });
             if (!shutdownError) shutdownError = proxyErr;
@@ -1206,6 +1209,7 @@ app.setIsPreflightComplete = (val) => { isPreflightComplete = Boolean(val); };
 app.resetShutdownState = () => {
     isShuttingDown = false;
     isPreflightComplete = false;
+    activeServer = null;
     shutdownPromise = null;
     activeExtractionControllers.clear();
     activeStreamControllers.clear();

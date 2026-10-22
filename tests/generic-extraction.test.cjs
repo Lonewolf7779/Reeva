@@ -496,6 +496,28 @@ test("Extraction Orchestrator: End-to-end generic extraction registers local fil
 // 7. API ENDPOINT & BOUNDARY TESTS
 // ==============================================================================
 
+async function closeServer(server, timeoutMs = 2000) {
+    if (!server) return;
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
+    if (typeof server.closeAllConnections === "function") {
+        try { server.closeAllConnections(); } catch (_) {}
+    }
+    if (server.listening) {
+        await new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                try { server.close(); } catch (_) {}
+                resolve();
+            }, timeoutMs);
+            server.close(() => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
+    }
+}
+
 function makeRequest(server, path, method = "GET", headers = {}) {
     return new Promise((resolve, reject) => {
         const addr = server.address();
@@ -504,7 +526,11 @@ function makeRequest(server, path, method = "GET", headers = {}) {
             port: addr.port,
             path,
             method,
-            headers
+            agent: false,
+            headers: {
+                "Connection": "close",
+                ...headers
+            }
         }, (res) => {
             let data = "";
             res.on("data", chunk => { data += chunk; });
@@ -736,5 +762,6 @@ test("Async Validation: validateExtractionResult rejects 0-byte empty files", as
 });
 
 after(async () => {
+    http.globalAgent.destroy();
     await stopDefaultEgressProxy();
 });

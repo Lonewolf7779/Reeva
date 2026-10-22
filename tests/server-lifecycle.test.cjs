@@ -638,6 +638,15 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
             if (child.stderr) child.stderr.destroy();
             child.kill("SIGKILL");
         } catch (_) {}
+        if (child.exitCode === null && child.signalCode === null) {
+            await new Promise((r) => {
+                const t = setTimeout(r, 1000);
+                child.once("exit", () => {
+                    clearTimeout(t);
+                    r();
+                });
+            });
+        }
     }
 });
 

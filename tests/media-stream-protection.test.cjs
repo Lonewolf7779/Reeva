@@ -14,6 +14,7 @@ process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-msp-${process.pid}`);
 
 const { MediaRegistry, defaultRegistry } = require("../lib/media-registry.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 const app = require("../server.cjs");
 
 function ensureTempDir() {
@@ -846,7 +847,9 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     }
 });
 
-after(() => {
+after(async () => {
+    http.globalAgent.destroy();
+    await stopDefaultEgressProxy();
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });

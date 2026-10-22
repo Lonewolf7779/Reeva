@@ -15,23 +15,43 @@ const { SSRFError } = require("../lib/ssrf-filter.cjs");
 const { validateServerConfig } = require("../lib/config.cjs");
 const serverApp = require("../server.cjs");
 
-// Helper to close a test HTTP server with a referenced rejection timer
-function closeServer(server, timeoutMs = 2000) {
-    return new Promise((resolve, reject) => {
-        let closed = false;
-        const closeTimeout = setTimeout(() => {
-            if (closed) return;
-            reject(new Error(`Test server failed to close within ${timeoutMs}ms deadline`));
-        }, timeoutMs);
-
-        server.close((err) => {
-            if (closed) return;
-            closed = true;
-            clearTimeout(closeTimeout);
-            if (err) reject(err);
-            else resolve();
+// Helper to close a test HTTP server with immediate socket teardown and bounded wait
+async function closeServer(server, timeoutMs = 2000) {
+    if (!server) return;
+    if (server._sockets) {
+        for (const s of server._sockets) {
+            try { s.destroy(); } catch (_) {}
+        }
+        server._sockets.clear();
+    }
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
+    if (typeof server.closeAllConnections === "function") {
+        try { server.closeAllConnections(); } catch (_) {}
+    }
+    if (server.listening) {
+        await new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                try { server.close(); } catch (_) {}
+                resolve();
+            }, timeoutMs);
+            server.close(() => {
+                clearTimeout(timer);
+                resolve();
+            });
         });
+    }
+}
+
+function trackServer(server) {
+    const sockets = new Set();
+    server.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
     });
+    server._sockets = sockets;
+    return server;
 }
 
 // =============================================================================
@@ -804,7 +824,7 @@ test("Public Error Sanitization: HTTP boundary strips internal paths, private pr
     const port = server.address().port;
 
     const requestJson = (path) => new Promise((resolve, reject) => {
-        http.get(`http://127.0.0.1:${port}${path}`, (res) => {
+        http.get(`http://127.0.0.1:${port}${path}`, { agent: false, headers: { "Connection": "close" } }, (res) => {
             let data = "";
             res.on("data", (c) => data += c);
             res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
@@ -947,7 +967,9 @@ test("Production Endpoint: Actual serverApp /api/download/:platform returns appr
                 port,
                 path: "/api/download/instagram?url=https://disallowed-host.example.com/p/test123",
                 method: "GET",
+                agent: false,
                 headers: {
+                    "Connection": "close",
                     "X-Request-Id": testReqId
                 }
             }, (res) => {
