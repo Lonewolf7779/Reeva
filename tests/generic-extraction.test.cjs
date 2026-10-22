@@ -1,13 +1,14 @@
 // tests/generic-extraction.test.cjs — Automated Tests for "More Sites" Generic Extraction
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const http = require("http");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 
 const {
     validatePlatform,
@@ -734,3 +735,6 @@ test("Async Validation: validateExtractionResult rejects 0-byte empty files", as
     }
 });
 
+after(async () => {
+    await stopDefaultEgressProxy();
+});

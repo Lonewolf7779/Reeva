@@ -1,13 +1,14 @@
 // tests/tiktok-extraction.test.cjs — Deterministic and Isolated Tests for TikTok Extraction Adapter
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const os = require("os");
 const crypto = require("crypto");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 
 const {
     extractTikTok,
@@ -524,4 +525,8 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
             });
         });
     }
+});
+
+after(async () => {
+    await stopDefaultEgressProxy();
 });

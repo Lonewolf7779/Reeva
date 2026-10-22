@@ -1,7 +1,9 @@
 // tests/extraction.test.cjs — Deterministic Unit Tests for Reeva Extraction Architecture
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
+const os = require("os");
+const path = require("path");
 const assert = require("node:assert/strict");
 
 const {
@@ -20,6 +22,9 @@ const { extractFacebook } = require("../lib/extraction/adapters/facebook.cjs");
 const { extractTwitter, extractTweetId, calculateSyndicationToken } = require("../lib/extraction/adapters/twitter.cjs");
 const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
 const { extractYouTube } = require("../lib/extraction/adapters/youtube.cjs");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
+
+const mockFfmpegPath = path.resolve(os.tmpdir(), "reeva-mock-ffmpeg");
 const { ValidationError } = require("../lib/url-validator.cjs");
 const { SecurityHTTPError } = require("../lib/http-client.cjs");
 const { BoundedCache } = require("../lib/cache.cjs");
@@ -938,6 +943,7 @@ test("YouTube Integration: VIDEO_AND_AUDIO mode merges to local file artifact an
 
     const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
         mode: "VIDEO_AND_AUDIO",
+        ffmpegPath: mockFfmpegPath,
         commandRunner: mockRunner
     });
 
@@ -978,6 +984,7 @@ test("YouTube Integration: Defaults to VIDEO_AND_AUDIO when mode is omitted", as
     };
 
     const result = await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+        ffmpegPath: mockFfmpegPath,
         commandRunner: mockRunner
     });
 
@@ -1943,4 +1950,8 @@ test("Result Validator: Truncates long titles to 200 chars", async () => {
     }, "instagram");
 
     assert.equal(validated.title.length, 200);
+});
+
+after(async () => {
+    await stopDefaultEgressProxy();
 });

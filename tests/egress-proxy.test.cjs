@@ -1,7 +1,11 @@
 // tests/egress-proxy.test.cjs — Deterministic Security Tests for yt-dlp Egress Proxy
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
+const path = require("path");
+const os = require("os");
+
+const mockFfmpegPath = path.resolve(os.tmpdir(), "reeva-mock-ffmpeg");
 const assert = require("node:assert/strict");
 const http = require("http");
 const net = require("net");
@@ -579,6 +583,7 @@ test("Process Security: YouTube extraction passes --proxy flag pointing to loopb
     await extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
         mode: "VIDEO_AND_AUDIO",
         commandRunner: capturingRunner,
+        ffmpegPath: mockFfmpegPath,
         metadataTimeoutMs: 5000
     });
     assert.ok(capturedArgs.includes("--proxy"), "yt-dlp args must include --proxy in VIDEO_AND_AUDIO mode");
@@ -633,6 +638,7 @@ test("Process Security: Arbitrary external options.proxyUrl cannot override YouT
         mode: "VIDEO_AND_AUDIO",
         proxyUrl: externalAttackerProxy,
         commandRunner: capturingRunner,
+        ffmpegPath: mockFfmpegPath,
         metadataTimeoutMs: 5000
     });
 
@@ -693,6 +699,7 @@ test("Process Security: YouTube extraction propagates AbortSignal and aborts sub
 
     const extractPromise = extractYouTube("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
         signal: controller.signal,
+        ffmpegPath: mockFfmpegPath,
         commandRunner: ({ signal }) => defaultCommandRunner({
             command: "node",
             args: ["-e", "setTimeout(() => {}, 30000);"],
@@ -746,4 +753,8 @@ test("Subprocess Security: defaultCommandRunner sanitizes all proxy bypass envir
             delete process.env[v];
         }
     }
+});
+
+after(async () => {
+    await stopDefaultEgressProxy();
 });
