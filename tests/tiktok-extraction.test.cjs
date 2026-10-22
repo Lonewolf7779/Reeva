@@ -512,6 +512,16 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
         if (typeof server.closeAllConnections === "function") {
             server.closeAllConnections();
         }
-        await new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error("Server teardown failed: server.close() did not complete within 2000ms"));
+            }, 2000);
+
+            server.close((err) => {
+                clearTimeout(timer);
+                if (err) return reject(err);
+                resolve();
+            });
+        });
     }
 });

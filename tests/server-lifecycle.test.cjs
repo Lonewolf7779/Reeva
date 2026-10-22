@@ -29,8 +29,14 @@ before(async () => {
     await cleanStaleTempFiles();
 });
 
-async function closeServer(server) {
+async function closeServer(server, timeoutMs = 2000) {
     if (!server) return;
+    if (server._sockets) {
+        for (const s of server._sockets) {
+            try { s.destroy(); } catch (_) {}
+        }
+        server._sockets.clear();
+    }
     if (typeof server.closeIdleConnections === "function") {
         try { server.closeIdleConnections(); } catch (_) {}
     }
@@ -38,12 +44,43 @@ async function closeServer(server) {
         try { server.closeAllConnections(); } catch (_) {}
     }
     if (server.listening) {
-        await new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error(`Server teardown failed: server.close() did not complete within ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            server.close((err) => {
+                clearTimeout(timer);
+                if (err) return reject(err);
+                resolve();
+            });
+        });
     }
 }
 
-function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
+function httpRequest({ method = "GET", path: reqPath, port, headers = {}, timeoutMs = 5000 }) {
     return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+        };
+
+        const safeReject = (err) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(err);
+        };
+
+        const safeResolve = (val) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(val);
+        };
+
         const req = http.request({
             host: "127.0.0.1",
             port,
@@ -56,7 +93,7 @@ function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
             res.on("data", (chunk) => chunks.push(chunk));
             res.on("end", () => {
                 const rawBody = Buffer.concat(chunks);
-                resolve({
+                safeResolve({
                     status: res.statusCode,
                     headers: res.headers,
                     body: rawBody,
@@ -64,9 +101,20 @@ function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
                     json: async () => JSON.parse(rawBody.toString("utf8"))
                 });
             });
-            res.on("error", reject);
+            res.on("error", safeReject);
         });
-        req.on("error", reject);
+
+        req.on("error", safeReject);
+
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                const timeoutErr = new Error(`httpRequest timed out after ${timeoutMs}ms (${method} ${reqPath})`);
+                req.destroy(timeoutErr);
+                safeReject(timeoutErr);
+            }, timeoutMs);
+            if (timer.unref) timer.unref();
+        }
+
         req.end();
     });
 }
@@ -377,6 +425,154 @@ test("Active extraction AbortController is aborted when shutdown deadline expire
     }
 });
 
+test("Server close lifecycle completes successfully when server closes cleanly", async () => {
+    app.resetShutdownState();
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+
+    try {
+        await app.gracefulShutdown("TEST_NORMAL_CLOSE", {
+            timeoutMs: 50,
+            serverCloseTimeoutMs: 500,
+            server
+        });
+        assert.strictEqual(server.listening, false, "Server must no longer be listening");
+        assert.strictEqual(app.getIsShuttingDown(), true, "Shutdown state must be active");
+    } finally {
+        app.resetShutdownState();
+        await closeServer(server);
+    }
+});
+
+test("Server close whose callback never completes rejects at deadline even if listening is false", async () => {
+    app.resetShutdownState();
+
+    const hangingServer = http.createServer(app);
+    await new Promise((resolve) => hangingServer.listen(0, resolve));
+
+    const originalClose = hangingServer.close;
+    // Simulate a close operation where listening property is set to false immediately,
+    // but the close callback is never invoked
+    hangingServer.close = function (_cb) {
+        Object.defineProperty(hangingServer, "listening", {
+            get: () => false,
+            configurable: true
+        });
+        // Deliberately do not call _cb
+    };
+
+    try {
+        await assert.rejects(
+            async () => {
+                await app.gracefulShutdown("TEST_HANGING_CLOSE", {
+                    timeoutMs: 50,
+                    serverCloseTimeoutMs: 150,
+                    server: hangingServer
+                });
+            },
+            (err) => {
+                assert.ok(err instanceof Error);
+                assert.strictEqual(err.message, "HTTP server failed to close within shutdown deadline");
+                return true;
+            },
+            "Shutdown must reject with timeout error when server close callback never completes"
+        );
+    } finally {
+        hangingServer.close = originalClose;
+        delete hangingServer.listening;
+        app.resetShutdownState();
+        await closeServer(hangingServer);
+    }
+});
+
+test("Shutdown cleanup: Required cleanup steps execute even when server.close() times out", async () => {
+    app.resetShutdownState();
+
+    // Register a media entry to verify it gets cleared
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/shutdown-timeout-test.mp4",
+        platform: "instagram"
+    });
+    assert.ok(defaultRegistry.getMedia(reg.id), "Media entry must exist before shutdown");
+
+    const hangingServer = http.createServer(app);
+    await new Promise((resolve) => hangingServer.listen(0, resolve));
+
+    const originalClose = hangingServer.close;
+    hangingServer.close = function (_cb) {
+        // Deliberately do not invoke callback so deadline triggers
+    };
+
+    try {
+        await assert.rejects(
+            async () => {
+                await app.gracefulShutdown("TEST_CLEANUP_ON_CLOSE_TIMEOUT", {
+                    timeoutMs: 50,
+                    serverCloseTimeoutMs: 100,
+                    server: hangingServer
+                });
+            },
+            (err) => {
+                assert.ok(err instanceof Error);
+                assert.strictEqual(err.message, "HTTP server failed to close within shutdown deadline");
+                return true;
+            },
+            "Shutdown must report server close deadline failure to caller"
+        );
+
+        // Verify cleanup occurred despite server close timeout
+        assert.strictEqual(defaultRegistry.getMedia(reg.id), null, "Media registry must be cleared during shutdown even if close times out");
+    } finally {
+        hangingServer.close = originalClose;
+        app.resetShutdownState();
+        defaultRegistry.clear();
+        await closeServer(hangingServer);
+    }
+});
+
+test("Shutdown cleanup: Required cleanup steps execute even when server.close() emits an error", async () => {
+    app.resetShutdownState();
+
+    const reg = defaultRegistry.registerMedia({
+        upstreamUrl: "https://example.com/shutdown-error-test.mp4",
+        platform: "instagram"
+    });
+    assert.ok(defaultRegistry.getMedia(reg.id), "Media entry must exist before shutdown");
+
+    const errorServer = http.createServer(app);
+    await new Promise((resolve) => errorServer.listen(0, resolve));
+
+    const originalClose = errorServer.close;
+    errorServer.close = function (cb) {
+        cb(new Error("EIO: simulated socket error during close"));
+    };
+
+    try {
+        await assert.rejects(
+            async () => {
+                await app.gracefulShutdown("TEST_CLEANUP_ON_CLOSE_ERROR", {
+                    timeoutMs: 50,
+                    serverCloseTimeoutMs: 150,
+                    server: errorServer
+                });
+            },
+            (err) => {
+                assert.ok(err instanceof Error);
+                assert.strictEqual(err.message, "EIO: simulated socket error during close");
+                return true;
+            },
+            "Shutdown must report original close error to caller"
+        );
+
+        assert.strictEqual(defaultRegistry.getMedia(reg.id), null, "Media registry must be cleared even when close emits an error");
+    } finally {
+        errorServer.close = originalClose;
+        app.resetShutdownState();
+        defaultRegistry.clear();
+        await closeServer(errorServer);
+    }
+});
+
 // =========================================================================
 // 5. Signal Handling Subprocess Integration Test
 // =========================================================================
@@ -395,6 +591,9 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
 
     let stdoutData = "";
     try {
+        if (child.stderr) {
+            child.stderr.resume();
+        }
         child.stdout.on("data", (chunk) => {
             stdoutData += chunk.toString();
         });
@@ -434,7 +633,11 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
         // Either exit code 0 or null with SIGINT / SIGTERM
         assert.ok(result.code === 0 || result.signal === "SIGTERM" || result.signal === "SIGINT" || result.code === null);
     } finally {
-        try { child.kill("SIGKILL"); } catch (_) {}
+        try {
+            if (child.stdout) child.stdout.destroy();
+            if (child.stderr) child.stderr.destroy();
+            child.kill("SIGKILL");
+        } catch (_) {}
     }
 });
 

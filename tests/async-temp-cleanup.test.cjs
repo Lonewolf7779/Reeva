@@ -27,6 +27,96 @@ const { defaultRegistry, MediaRegistry } = require("../lib/media-registry.cjs");
 const { ExtractionError, EXTRACTION_ERROR_CODES } = require("../lib/extraction/types.cjs");
 const app = require("../server.cjs");
 
+function httpRequest({ method = "GET", path: reqPath, port, headers = {}, timeoutMs = 5000 }) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+        };
+
+        const safeReject = (err) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(err);
+        };
+
+        const safeResolve = (val) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(val);
+        };
+
+        const req = http.request({
+            host: "127.0.0.1",
+            port,
+            path: reqPath,
+            method,
+            agent: false,
+            headers: { "Connection": "close", ...headers }
+        }, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+                const rawBody = Buffer.concat(chunks);
+                safeResolve({
+                    status: res.statusCode,
+                    headers: res.headers,
+                    body: rawBody,
+                    arrayBuffer: async () => rawBody.buffer.slice(rawBody.byteOffset, rawBody.byteOffset + rawBody.byteLength),
+                    json: async () => JSON.parse(rawBody.toString("utf8"))
+                });
+            });
+            res.on("error", safeReject);
+        });
+
+        req.on("error", safeReject);
+
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                const timeoutErr = new Error(`httpRequest timed out after ${timeoutMs}ms (${method} ${reqPath})`);
+                req.destroy(timeoutErr);
+                safeReject(timeoutErr);
+            }, timeoutMs);
+            if (timer.unref) timer.unref();
+        }
+
+        req.end();
+    });
+}
+
+async function closeServer(server, timeoutMs = 2000) {
+    if (!server) return;
+    if (server._sockets) {
+        for (const s of server._sockets) {
+            try { s.destroy(); } catch (_) {}
+        }
+        server._sockets.clear();
+    }
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
+    if (typeof server.closeAllConnections === "function") {
+        try { server.closeAllConnections(); } catch (_) {}
+    }
+    if (server.listening) {
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error(`Server teardown failed: server.close() did not complete within ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            server.close((err) => {
+                clearTimeout(timer);
+                if (err) return reject(err);
+                resolve();
+            });
+        });
+    }
+}
+
 function ensureTempDir() {
     if (!fs.existsSync(REEVA_TEMP_DIR)) {
         fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
@@ -456,7 +546,7 @@ test("Async Cleanup (K1): Pause during async deletion denies new leases and retu
         assert.strictEqual(defaultRegistry.getActiveReaderCount(staleFile), 0, "No active readers should be attached");
 
         // 5. HTTP streaming request during deletion must cleanly return 404 MEDIA_NOT_FOUND
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await httpRequest({ port, path: `/api/media/${reg.id}` });
         assert.strictEqual(res.status, 404, "HTTP request during deletion must receive 404");
         const body = await res.json();
         assert.strictEqual(body.error.code, "MEDIA_NOT_FOUND", "Error code must be MEDIA_NOT_FOUND");
@@ -471,7 +561,7 @@ test("Async Cleanup (K1): Pause during async deletion denies new leases and retu
     } finally {
         fs.promises.unlink = originalUnlink;
         if (resumeUnlink) resumeUnlink();
-        await new Promise((resolve) => server.close(resolve));
+        await closeServer(server);
         if (fs.existsSync(staleFile)) {
             try { fs.unlinkSync(staleFile); } catch (_) {}
         }
