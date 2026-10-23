@@ -1,11 +1,35 @@
 // tests/api-security.test.cjs — Automated Tests for API Hardening, Headers, and Proxy Controls
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
+const { destroyHttpAgents } = require("../lib/http-client.cjs");
 const assert = require("node:assert/strict");
 const http = require("http");
 const app = require("../server.cjs");
 const { MediaRegistry } = require("../lib/media-registry.cjs");
+
+async function closeServer(server, timeoutMs = 2000) {
+    if (!server) return;
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
+    if (typeof server.closeAllConnections === "function") {
+        try { server.closeAllConnections(); } catch (_) {}
+    }
+    if (server.listening) {
+        await new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                try { server.close(); } catch (_) {}
+                resolve();
+            }, timeoutMs);
+            server.close(() => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
+    }
+}
 
 function makeRequest(server, path, method = "GET", headers = {}) {
     return new Promise((resolve, reject) => {
@@ -15,7 +39,11 @@ function makeRequest(server, path, method = "GET", headers = {}) {
             port: addr.port,
             path,
             method,
-            headers
+            agent: false,
+            headers: {
+                "Connection": "close",
+                ...headers
+            }
         }, (res) => {
             let data = "";
             res.on("data", chunk => { data += chunk; });
@@ -47,7 +75,7 @@ test("API Hardening: Enforces HTTP methods (rejects POST/PUT/DELETE on GET route
         const putRes = await makeRequest(server, "/api/media/med_123", "PUT");
         assert.equal(putRes.status, 405, "PUT method should return 405");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -60,7 +88,7 @@ test("API Hardening: Controlled 404 for unknown API routes", async () => {
         assert.equal(res.status, 404);
         assert.equal(res.json.error.code, "NOT_FOUND");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -81,7 +109,7 @@ test("Security Headers: Helmet CSP and protections are properly configured", asy
         assert.equal(res.headers["x-frame-options"], "DENY");
         assert.ok(res.headers["x-request-id"], "X-Request-Id header must be returned");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -116,7 +144,7 @@ test("Proxy Routing (Test A): /api/proxy?id=<opaque-id> resolves existing entry 
         assert.equal(badIdRes.status, 400);
         assert.equal(badIdRes.json.error.code, "INVALID_MEDIA_ID");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -141,7 +169,7 @@ test("Proxy Security (Test B): /api/proxy?url=<approved-cdn> cannot register arb
         // Confirm it was NOT registered in the media registry
         assert.equal(defaultRegistry.findByUpstreamUrl(approvedCdnUrl), null);
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -168,7 +196,7 @@ test("Proxy SSRF Defense (Test C): /api/proxy?url= strictly blocks SSRF/internal
             assert.equal(defaultRegistry.findByUpstreamUrl(url), null);
         }
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -236,7 +264,7 @@ test("API Download Endpoint: Validates parameters, platforms, and domains", asyn
         assert.equal(invalidModeRes.status, 502);
         assert.equal(invalidModeRes.json.error.code, "UNSUPPORTED_MEDIA");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -276,7 +304,7 @@ test("API Download Endpoint: Preserves SecurityHTTPError status codes cleanly", 
         assert.equal(res.status, 400);
         assert.equal(res.json.error.code, "DISALLOWED_DESTINATION");
     } finally {
-        server.close();
+        await closeServer(server);
     }
 });
 
@@ -359,7 +387,14 @@ test("API Media Streaming: Serves local file artifact with security boundary che
 
         try { fs.unlinkSync(outsideFile); } catch (_) {}
     } finally {
-        server.close();
+        await closeServer(server);
         try { fs.unlinkSync(testFile); } catch (_) {}
     }
+});
+
+
+after(async () => {
+    destroyHttpAgents();
+    http.globalAgent.destroy();
+    await stopDefaultEgressProxy();
 });

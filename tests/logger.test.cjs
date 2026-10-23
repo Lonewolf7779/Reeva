@@ -4,6 +4,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("http");
+const os = require("os");
+const path = require("path");
+
+// Isolate temporary directory for this test worker to prevent cross-worker test interference
+process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-logger-${process.pid}`);
 
 const {
     generateRequestId,
@@ -23,6 +28,96 @@ const {
 } = require("../lib/extraction/index.cjs");
 
 const app = require("../server.cjs");
+
+function httpRequest({ method = "GET", path: reqPath, port, headers = {}, timeoutMs = 5000 }) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+        };
+
+        const safeReject = (err) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(err);
+        };
+
+        const safeResolve = (val) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(val);
+        };
+
+        const req = http.request({
+            host: "127.0.0.1",
+            port,
+            path: reqPath,
+            method,
+            agent: false,
+            headers: { "Connection": "close", ...headers }
+        }, (res) => {
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => {
+                const rawBody = Buffer.concat(chunks);
+                safeResolve({
+                    status: res.statusCode,
+                    headers: res.headers,
+                    body: rawBody,
+                    arrayBuffer: async () => rawBody.buffer.slice(rawBody.byteOffset, rawBody.byteOffset + rawBody.byteLength),
+                    json: async () => JSON.parse(rawBody.toString("utf8"))
+                });
+            });
+            res.on("error", safeReject);
+        });
+
+        req.on("error", safeReject);
+
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                const timeoutErr = new Error(`httpRequest timed out after ${timeoutMs}ms (${method} ${reqPath})`);
+                req.destroy(timeoutErr);
+                safeReject(timeoutErr);
+            }, timeoutMs);
+            if (timer.unref) timer.unref();
+        }
+
+        req.end();
+    });
+}
+
+async function closeServer(server, timeoutMs = 2000) {
+    if (!server) return;
+    if (server._sockets) {
+        for (const s of server._sockets) {
+            try { s.destroy(); } catch (_) {}
+        }
+        server._sockets.clear();
+    }
+    if (typeof server.closeIdleConnections === "function") {
+        try { server.closeIdleConnections(); } catch (_) {}
+    }
+    if (typeof server.closeAllConnections === "function") {
+        try { server.closeAllConnections(); } catch (_) {}
+    }
+    if (server.listening) {
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error(`Server teardown failed: server.close() did not complete within ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            server.close((err) => {
+                clearTimeout(timer);
+                if (err) return reject(err);
+                resolve();
+            });
+        });
+    }
+}
 
 // =========================================================================
 // TASK 6: LOGGER & SANITIZER DETERMINISTIC TESTS
@@ -261,7 +356,7 @@ test("Error Response Test 2: HTTP /api/download/:platform returns sanitized publ
 
     try {
         // Request invalid platform URL (triggering validation error)
-        const res = await fetch(`http://127.0.0.1:${port}/api/download/instagram?url=https://invalid-host.com/not-instagram`);
+        const res = await httpRequest({ port, path: "/api/download/instagram?url=https://invalid-host.com/not-instagram" });
         assert.strictEqual(res.status, 400);
 
         const data = await res.json();
@@ -277,7 +372,7 @@ test("Error Response Test 2: HTTP /api/download/:platform returns sanitized publ
         assert.ok(!serialized.includes(".cjs"));
         assert.ok(!serialized.includes("server.cjs"));
     } finally {
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -287,7 +382,7 @@ test("Error Response Test 3: HTTP /api/media/:mediaId non-existent media returns
     const port = server.address().port;
 
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/med_nonexistent1234`);
+        const res = await httpRequest({ port, path: "/api/media/med_nonexistent1234" });
         assert.strictEqual(res.status, 404);
 
         const data = await res.json();
@@ -299,7 +394,7 @@ test("Error Response Test 3: HTTP /api/media/:mediaId non-existent media returns
         assert.ok(!serialized.includes("REEVA_TEMP_DIR"));
         assert.ok(!serialized.includes("stack"));
     } finally {
-        if (server.listening) server.close();
+        await closeServer(server);
     }
 });
 
@@ -372,6 +467,9 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
     await new Promise((resolve) => server.listen(0, resolve));
     const port = server.address().port;
 
+    if (!fs.existsSync(REEVA_TEMP_DIR)) {
+        fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    }
     const testFile = path.join(REEVA_TEMP_DIR, `test_obs_${Date.now()}.mp4`);
     fs.writeFileSync(testFile, Buffer.alloc(1024, "X"));
 
@@ -385,7 +483,7 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
 
     try {
         // Successful stream
-        const res = await fetch(`http://127.0.0.1:${port}/api/media/${reg.id}`);
+        const res = await httpRequest({ port, path: `/api/media/${reg.id}` });
         assert.strictEqual(res.status, 200);
         await res.arrayBuffer();
 
@@ -411,10 +509,10 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
             platform: "instagram",
             type: "video",
             title: "Bad File",
-            localFilePath: path.resolve("../outside.mp4")
+            localFilePath: path.resolve(os.tmpdir(), `forbidden_outside_${Date.now()}.mp4`)
         });
 
-        const resBad = await fetch(`http://127.0.0.1:${port}/api/media/${badReg.id}`);
+        const resBad = await httpRequest({ port, path: `/api/media/${badReg.id}` });
         assert.strictEqual(resBad.status, 403);
         await new Promise((r) => setTimeout(r, 50));
 
@@ -426,7 +524,9 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
     } finally {
         logger.info = originalInfo;
         logger.error = originalError;
-        if (server.listening) server.close();
+        await closeServer(server);
+        try { defaultRegistry.deleteMedia(reg.id); } catch (_) {}
+        try { if (typeof badReg !== "undefined" && badReg) defaultRegistry.deleteMedia(badReg.id); } catch (_) {}
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }

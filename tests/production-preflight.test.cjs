@@ -1,7 +1,7 @@
 // tests/production-preflight.test.cjs — Deterministic Tests for Production Binary and Storage Preflight
 "use strict";
 
-const { test, after } = require("node:test");
+const { test, after, before } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
@@ -14,7 +14,13 @@ const {
     validateStorageDirectory,
     validateProductionPreflight
 } = require("../lib/config.cjs");
+const { cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
 const app = require("../server.cjs");
+
+before(async () => {
+    // Settle any in-flight startup scan initiated by server.cjs before starting test suite
+    await cleanStaleTempFiles();
+});
 
 const TEST_DIR = path.join(os.tmpdir(), `reeva_preflight_test_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`);
 
@@ -70,7 +76,7 @@ test("validateStorageDirectory: Rejects unwritable directories", () => {
 
     // On Windows, read-only permissions on directories don't completely block file creations in some setups,
     // so we test by mocking writeFileSync or checking invalid root
-    const invalidPath = process.platform === "win32" ? "Z:\\nonexistent_drive\\reeva" : "/proc/nonexistent/reeva";
+    const invalidPath = process.platform === "win32" ? "Z:\\nonexistent_drive\\reeva" : "/dev/null/reeva";
 
     assert.throws(
         () => validateStorageDirectory(invalidPath),

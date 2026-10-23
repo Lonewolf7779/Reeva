@@ -20,13 +20,15 @@ const {
     SecurityHTTPError,
     StreamMeter,
     isPermittedMediaContentType,
-    secureFetch
+    secureFetch,
+    destroyHttpAgents
 } = require("./lib/http-client.cjs");
 
 const { defaultRegistry } = require("./lib/media-registry.cjs");
 const { createConcurrencyLimiter } = require("./lib/concurrency-limiter.cjs");
 const { logger, requestIdMiddleware } = require("./lib/logger.cjs");
 const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
+const { EXTRACTION_ERROR_CODES, DEFAULT_ERROR_MESSAGES } = require("./lib/extraction/types.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
 const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
 
@@ -142,10 +144,10 @@ app.use(express.static("public", {
 // ================== RATE LIMITERS ==================
 const generalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: serverConfig.rateLimitGeneralMax,
+    limit: serverConfig.rateLimitGeneralMax,
     standardHeaders: true,
     legacyHeaders: false,
-    validate: { xForwardedForHeader: false },
+    ipv6Subnet: 56,
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -157,10 +159,10 @@ app.use(generalLimiter);
 
 const extractionLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: serverConfig.rateLimitExtractionMax,
+    limit: serverConfig.rateLimitExtractionMax,
     standardHeaders: true,
     legacyHeaders: false,
-    validate: { xForwardedForHeader: false },
+    ipv6Subnet: 56,
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -171,10 +173,10 @@ const extractionLimiter = rateLimit({
 
 const mediaStreamLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, // 5 minutes
-    max: serverConfig.rateLimitMediaMax,
+    limit: serverConfig.rateLimitMediaMax,
     standardHeaders: true,
     legacyHeaders: false,
-    validate: { xForwardedForHeader: false },
+    ipv6Subnet: 56,
     message: {
         error: {
             code: "RATE_LIMIT_EXCEEDED",
@@ -210,6 +212,184 @@ app.use("/api", (req, res, next) => {
     next();
 });
 
+// ================== ERROR SANITIZATION ==================
+const VALIDATION_ERROR_MESSAGES = Object.freeze({
+    MISSING_URL: "Please paste a video link first.",
+    INVALID_PLATFORM: "Platform is required.",
+    UNSUPPORTED_PLATFORM: "Unsupported platform. Supported platforms: instagram, facebook, twitter, pinterest, youtube, tiktok, generic.",
+    URL_TOO_LONG: "The supplied URL exceeds the maximum permitted length.",
+    MALFORMED_URL: "Invalid URL format. Please provide a well-formed URL.",
+    UNSUPPORTED_PROTOCOL: "Only secure HTTPS URLs are supported.",
+    CREDENTIALS_IN_URL: "URLs containing credentials are not permitted.",
+    INVALID_PORT: "Non-standard ports are not allowed.",
+    DISALLOWED_DOMAIN: "The provided URL domain is not permitted or does not match the requested platform.",
+    USE_SPECIALIZED_PLATFORM: "This URL belongs to a specialized platform (such as YouTube, Instagram, or TikTok). Please use the dedicated platform downloader.",
+    MISSING_MEDIA_URL: "Media URL is required.",
+    UNAPPROVED_MEDIA_DOMAIN: "The media destination is not an approved media CDN.",
+    INVALID_INPUT: "Invalid request parameters.",
+    VALIDATION_FAILED: "Invalid request parameters."
+});
+
+const SECURITY_ERROR_MESSAGES = Object.freeze({
+    RESPONSE_TOO_LARGE: "Response size exceeds maximum permitted limit.",
+    CLIENT_ABORTED: "Request aborted by client.",
+    TIMEOUT: "Request timed out.",
+    DISALLOWED_DESTINATION: "Destination is not permitted.",
+    MALFORMED_URL: "Invalid request URL.",
+    CREDENTIALS_FORBIDDEN: "Credentials in request URLs are forbidden.",
+    FORBIDDEN_PORT: "Non-standard ports are forbidden.",
+    FORBIDDEN_PROTOCOL: "Only secure HTTPS URLs are supported.",
+    UPSTREAM_COMMUNICATION_ERROR: "Upstream communication failure.",
+    TOO_MANY_REDIRECTS: "Too many redirects encountered.",
+    BAD_REDIRECT: "Invalid redirect response.",
+    BAD_REDIRECT_LOCATION: "Invalid redirect location.",
+    SECURITY_HTTP_ERROR: "Security policy violation."
+});
+
+/**
+ * Detects whether an error message or identifier contains sensitive diagnostics such as:
+ * - Local filesystem paths (Windows drive letters, UNC shares, POSIX root paths, relative paths)
+ * - Internal or literal IP addresses (IPv4 loopback/private/link-local/literals, IPv6 loopback/link-local/literals)
+ * - Raw Node.js or OS system exception codes (ENOENT, EACCES, ECONNREFUSED, ENOTFOUND, etc.)
+ * - Uncaught JavaScript type/reference errors (TypeError, ReferenceError) or stack trace frames
+ * - URLs with sensitive query parameters, tokens, or credential signatures
+ * - Unprintable control characters or embedded newlines
+ *
+ * @param {string} str
+ * @returns {boolean}
+ */
+function containsSensitiveDiagnostic(str) {
+    if (!str || typeof str !== "string") return false;
+
+    // 1. Windows drive letters & UNC paths
+    if (/[a-zA-Z]:[\\\/]/i.test(str)) return true;
+    if (/(?:^|[\s"'`(<[])\\\\[a-zA-Z0-9._$-]+\\[a-zA-Z0-9._$-]+/i.test(str)) return true;
+
+    // 2. POSIX root paths & common Linux/Unix directories & relative traversals
+    if (/(?:^|[\s"'`(<[])[\\\/](?:root|app|opt|workspace|srv|home|var|tmp|etc|usr|bin|sbin|lib|lib64|proc|sys|dev|node_modules)(?:[\\\/]|$)/i.test(str)) return true;
+    if (/(?:^|[\s"'`(<[])[\\\/](?:Users|Program Files|Windows)[\\\/]/i.test(str)) return true;
+    if (/(?:^|[\s"'`(<[])(?:\.\.?[\\\/])/i.test(str)) return true;
+
+    // 3. Raw Node.js / OS system error tokens
+    if (/\b(?:ENOENT|EACCES|EPERM|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|ENETDOWN|ENOTDIR|EISDIR|EBADF|EMFILE|ENFILE|EEXIST)\b/i.test(str)) return true;
+
+    // 4. JavaScript runtime error types & stack trace indicators
+    if (/\b(?:TypeError|ReferenceError|SyntaxError|RangeError|EvalError|URIError)\b/i.test(str)) return true;
+    if (/\bat\s+[a-zA-Z0-9_$.<>]+\s+\(/i.test(str)) return true;
+    if (/\bat\s+.*\b(?:\.cjs|\.js|\.mjs):\d+:\d+/i.test(str)) return true;
+
+    // 5. Ported or portless IPv4 literals (including localhost)
+    if (/\blocalhost\b/i.test(str)) return true;
+    if (/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?::\d+)?\b/.test(str)) return true;
+
+    // 6. Ported or portless IPv6 literals (loopback, link-local, unique local, standard IPv6, bracketed)
+    if (/(?:^|[\s"'`(<[])(?:::1|::|\[::1\]|\[[0-9a-fA-F:]+\])(?::\d+)?(?:[\s"'`)>\]]|$)/.test(str)) return true;
+    if (/(?:^|[\s"'`(<[])(?:fe80|fc00|fd00):[0-9a-fA-F:]*(?::\d+)?(?:[\s"'`)>\]]|$)/i.test(str)) return true;
+    if (/\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}(?::\d+)?\b/i.test(str)) return true;
+
+    // 7. Signed URLs or URLs with query strings/parameters
+    if (/https?:\/\/[^\s"'<>]+\?[^\s"'<>]+/i.test(str)) return true;
+    if (/[?&](?:token|sig|signature|key|auth|secret|expires|session|hmac)=[^\s"'<>]+/i.test(str)) return true;
+
+    // 8. Unprintable control characters or embedded newlines
+    if (/[\r\n\x00-\x1f]/.test(str)) return true;
+
+    return false;
+}
+
+/**
+ * Strips URLs, tokens, and internal paths from diagnostic messages for safe public presentation.
+ */
+function sanitizePublicMessage(raw, fallbackMessage) {
+    if (!raw || typeof raw !== "string") return fallbackMessage;
+    if (containsSensitiveDiagnostic(raw)) {
+        return fallbackMessage;
+    }
+    return raw;
+}
+
+/**
+ * Centralized error response sanitizer at the HTTP response boundary.
+ * Maps application and system exceptions into deterministic, safe public error codes and messages,
+ * ensuring internal paths, private proxies, signed URLs, and system codes never reach clients.
+ *
+ * @param {Error} err
+ * @param {string} defaultCode
+ * @param {string} defaultMessage
+ * @param {number} defaultStatusCode
+ * @returns {{ statusCode: number, errorCode: string, message: string }}
+ */
+function sanitizePublicError(err, defaultCode = "EXTRACTION_FAILED", defaultMessage = "We could not retrieve media from this link.", defaultStatusCode = 502) {
+    let statusCode = defaultStatusCode;
+    let errorCode = defaultCode;
+    let publicMessage = defaultMessage;
+
+    const hasOwn = (obj, key) => Boolean(obj && typeof key === "string" && Object.prototype.hasOwnProperty.call(obj, key));
+
+    if (err instanceof ValidationError) {
+        statusCode = err.statusCode || 400;
+        const rawCode = (err.code && typeof err.code === "string") ? err.code.trim() : "";
+        if (hasOwn(VALIDATION_ERROR_MESSAGES, rawCode) && typeof VALIDATION_ERROR_MESSAGES[rawCode] === "string") {
+            errorCode = rawCode;
+            publicMessage = VALIDATION_ERROR_MESSAGES[rawCode];
+        } else {
+            errorCode = "VALIDATION_FAILED";
+            publicMessage = "Invalid request parameters.";
+        }
+    } else if (err instanceof SSRFError) {
+        statusCode = err.statusCode || 400;
+        const rawCode = (err.code && typeof err.code === "string") ? err.code.trim() : "";
+        const safeCodePattern = /^[A-Z0-9_]{3,32}$/;
+        const reservedProps = new Set(["constructor", "toString", "valueOf", "__proto__", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString"]);
+        if (rawCode && safeCodePattern.test(rawCode) && !reservedProps.has(rawCode) && !containsSensitiveDiagnostic(rawCode)) {
+            errorCode = rawCode;
+        } else {
+            errorCode = "VALIDATION_FAILED";
+        }
+        publicMessage = "Destination is not permitted.";
+    } else if (err instanceof SecurityHTTPError) {
+        statusCode = err.statusCode || 400;
+        const rawCode = (err.code && typeof err.code === "string") ? err.code.trim() : "";
+        if (hasOwn(SECURITY_ERROR_MESSAGES, rawCode) && typeof SECURITY_ERROR_MESSAGES[rawCode] === "string") {
+            errorCode = rawCode;
+            publicMessage = SECURITY_ERROR_MESSAGES[rawCode];
+        } else {
+            errorCode = "SECURITY_ERROR";
+            publicMessage = "Security policy violation.";
+        }
+    } else if (err instanceof ExtractionError) {
+        statusCode = err.statusCode || 502;
+        const rawCode = (err.code && typeof err.code === "string") ? err.code.trim() : "";
+        if (
+            hasOwn(EXTRACTION_ERROR_CODES, rawCode) &&
+            hasOwn(DEFAULT_ERROR_MESSAGES, rawCode) &&
+            typeof DEFAULT_ERROR_MESSAGES[rawCode] === "string"
+        ) {
+            errorCode = rawCode;
+            publicMessage = DEFAULT_ERROR_MESSAGES[rawCode];
+        } else {
+            errorCode = defaultCode;
+            publicMessage = defaultMessage;
+        }
+    } else {
+        // Unknown internal or system exception (e.g. ENOENT, ECONNREFUSED, TypeError, ReferenceError)
+        statusCode = (typeof err?.statusCode === "number" && err.statusCode >= 400 && err.statusCode <= 599)
+            ? err.statusCode
+            : defaultStatusCode;
+        errorCode = defaultCode;
+        publicMessage = defaultMessage;
+    }
+
+    if (typeof publicMessage !== "string" || !publicMessage) {
+        publicMessage = defaultMessage;
+    }
+    if (typeof errorCode !== "string" || !errorCode) {
+        errorCode = defaultCode;
+    }
+
+    return { statusCode, errorCode, message: publicMessage };
+}
+
 // ================== MAIN EXTRACTION ENDPOINT ==================
 app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
     if (isShuttingDown) {
@@ -226,7 +406,7 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
     activeExtractionControllers.add(abortController);
 
     req.on("close", () => {
-        if (!res.writableEnded) {
+        if (!res.writableEnded && (req.destroyed || !req.complete || req.socket?.destroyed)) {
             abortController.abort();
         }
     });
@@ -262,21 +442,21 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
         });
 
     } catch (err) {
-        let statusCode = 502;
-        let errorCode = "EXTRACTION_FAILED";
+        const sanitized = sanitizePublicError(err, "EXTRACTION_FAILED", "We could not retrieve media from this link.", 502);
 
-        if (err instanceof ValidationError || err instanceof SSRFError || err instanceof SecurityHTTPError) {
-            statusCode = err.statusCode || 400;
-            errorCode = err.code || "VALIDATION_FAILED";
-        } else if (err instanceof ExtractionError) {
-            statusCode = err.statusCode || 502;
-            errorCode = err.code || "EXTRACTION_FAILED";
-        }
+        logger.error({
+            requestId: req.id,
+            platform: req.params.platform,
+            operation: "extract",
+            status: "error",
+            code: sanitized.errorCode,
+            message: sanitized.message
+        });
 
-        res.status(statusCode).json({
+        res.status(sanitized.statusCode).json({
             error: {
-                code: errorCode,
-                message: err.message || "We could not retrieve media from this link."
+                code: sanitized.errorCode,
+                message: sanitized.message
             },
             requestId: req.id
         });
@@ -390,7 +570,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
     res.on("close", () => abortController.signal.removeEventListener("abort", onAbort));
 
     req.on("close", () => {
-        if (!res.writableEnded) {
+        if (!res.writableEnded && (req.destroyed || !req.complete || req.socket?.destroyed)) {
             abortController.abort();
         }
     });
@@ -589,6 +769,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         const { response } = fetchHandle;
 
         if (!response.ok) {
+            fetchHandle.abort();
             logStreamTerminal("error", `UPSTREAM_HTTP_${response.status}`);
             return res.status(502).json({
                 error: {
@@ -658,12 +839,22 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         if (fetchHandle) fetchHandle.abort();
         logStreamTerminal("error", err.code || "STREAM_ERROR");
 
-        const status = err instanceof SecurityHTTPError ? err.statusCode : 500;
+        const sanitized = sanitizePublicError(err, "STREAM_ERROR", "Failed to retrieve media stream.", 500);
+
+        logger.error({
+            requestId: req.id,
+            platform,
+            operation: "stream",
+            status: "error",
+            code: sanitized.errorCode,
+            message: sanitized.message
+        });
+
         if (!res.headersSent) {
-            res.status(status).json({
+            res.status(sanitized.statusCode).json({
                 error: {
-                    code: err.code || "STREAM_ERROR",
-                    message: err.message || "Failed to retrieve media stream."
+                    code: sanitized.errorCode,
+                    message: sanitized.message
                 },
                 requestId: req.id
             });
@@ -884,53 +1075,119 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
             activeStreamControllers.clear();
         }
 
+        let shutdownError = null;
+
         // 3. Stop accepting new HTTP connections and close socket
         if (serverToClose && serverToClose.listening) {
             // Close any idle keep-alive connections immediately
             if (typeof serverToClose.closeIdleConnections === "function") {
-                serverToClose.closeIdleConnections();
+                try {
+                    serverToClose.closeIdleConnections();
+                } catch (_) {}
             }
 
-            await new Promise((resolve) => {
-                let forceCloseTimer = null;
-                const onClose = (err) => {
-                    if (forceCloseTimer) clearTimeout(forceCloseTimer);
-                    if (err) {
-                        logger.error({ message: `Error closing HTTP server: ${err.message}` });
-                    }
-                    resolve();
-                };
+            const serverCloseTimeoutMs = Number.isInteger(options.serverCloseTimeoutMs) && options.serverCloseTimeoutMs > 0
+                ? options.serverCloseTimeoutMs
+                : 3000;
+            const forceCloseTimeoutMs = Math.min(1000, Math.max(10, Math.floor(serverCloseTimeoutMs / 2)));
 
-                serverToClose.close(onClose);
+            try {
+                await new Promise((resolve, reject) => {
+                    let forceCloseTimer = null;
+                    let hardTimeoutTimer = null;
+                    let isSettled = false;
 
-                // Ensure server.close() cannot hang indefinitely if a stubborn connection exists
-                forceCloseTimer = setTimeout(() => {
-                    if (typeof serverToClose.closeAllConnections === "function") {
-                        serverToClose.closeAllConnections();
-                    }
-                }, 1000);
-                if (forceCloseTimer.unref) forceCloseTimer.unref();
-            });
+                    const cleanupTimers = () => {
+                        if (forceCloseTimer) {
+                            clearTimeout(forceCloseTimer);
+                            forceCloseTimer = null;
+                        }
+                        if (hardTimeoutTimer) {
+                            clearTimeout(hardTimeoutTimer);
+                            hardTimeoutTimer = null;
+                        }
+                    };
+
+                    const onClose = (err) => {
+                        if (isSettled) return;
+                        isSettled = true;
+                        cleanupTimers();
+
+                        if (err) {
+                            logger.error({ message: `Error closing HTTP server: ${err.message}` });
+                            return reject(err);
+                        }
+                        resolve();
+                    };
+
+                    serverToClose.close(onClose);
+
+                    // If active/paused connections delay server closure, forcefully terminate them
+                    forceCloseTimer = setTimeout(() => {
+                        if (isSettled) return;
+                        if (typeof serverToClose.closeAllConnections === "function") {
+                            try {
+                                serverToClose.closeAllConnections();
+                            } catch (closeAllErr) {
+                                logger.error({ message: `Error calling closeAllConnections: ${closeAllErr.message}` });
+                            }
+                        }
+                    }, forceCloseTimeoutMs);
+                    if (forceCloseTimer.unref) forceCloseTimer.unref();
+
+                    // Hard safety deadline: only the server close callback may confirm normal closure.
+                    // If deadline expires before onClose callback completes, reject with clear timeout error.
+                    hardTimeoutTimer = setTimeout(() => {
+                        if (isSettled) return;
+                        isSettled = true;
+                        cleanupTimers();
+
+                        const timeoutErr = new Error("HTTP server failed to close within shutdown deadline");
+                        logger.error({ message: timeoutErr.message });
+                        reject(timeoutErr);
+                    }, serverCloseTimeoutMs);
+                });
+            } catch (closeErr) {
+                shutdownError = closeErr;
+            }
         }
 
-        // 4. Clear periodic background sweeps
-        if (staleCleanupInterval) {
-            clearInterval(staleCleanupInterval);
+        // 4. Clear periodic background sweeps (even if server closure timed out or failed)
+        try {
+            if (staleCleanupInterval) {
+                clearInterval(staleCleanupInterval);
+            }
+        } catch (intervalErr) {
+            logger.error({ message: `Error clearing stale-cleanup interval: ${intervalErr.message}` });
+            if (!shutdownError) shutdownError = intervalErr;
         }
 
         // 5. Clean up temporary files, registry entries, and egress proxy safely
         try {
             await stopDefaultEgressProxy();
-        } catch (_) {}
+            destroyHttpAgents();
+        } catch (proxyErr) {
+            logger.error({ message: `Error stopping egress proxy during shutdown: ${proxyErr.message}` });
+            if (!shutdownError) shutdownError = proxyErr;
+        }
 
         try {
             defaultRegistry.clear();
-        } catch (_) {}
+        } catch (regErr) {
+            logger.error({ message: `Error clearing media registry during shutdown: ${regErr.message}` });
+            if (!shutdownError) shutdownError = regErr;
+        }
 
         try {
             await cleanStaleTempFiles();
-        } catch (err) {
-            logger.error({ message: `Error cleaning temporary files during shutdown: ${err.message}` });
+        } catch (tempErr) {
+            logger.error({ message: `Error cleaning temporary files during shutdown: ${tempErr.message}` });
+            if (!shutdownError) shutdownError = tempErr;
+        }
+
+        // If server closure timed out or any cleanup step failed, propagate the error without emitting success log
+        if (shutdownError) {
+            throw shutdownError;
         }
 
         logger.info({
@@ -952,6 +1209,7 @@ app.setIsPreflightComplete = (val) => { isPreflightComplete = Boolean(val); };
 app.resetShutdownState = () => {
     isShuttingDown = false;
     isPreflightComplete = false;
+    activeServer = null;
     shutdownPromise = null;
     activeExtractionControllers.clear();
     activeStreamControllers.clear();
@@ -1005,5 +1263,11 @@ if (require.main === module) {
     process.on("SIGTERM", () => handleSignal("SIGTERM"));
     process.on("SIGINT", () => handleSignal("SIGINT"));
 }
+
+app.VALIDATION_ERROR_MESSAGES = VALIDATION_ERROR_MESSAGES;
+app.SECURITY_ERROR_MESSAGES = SECURITY_ERROR_MESSAGES;
+app.sanitizePublicError = sanitizePublicError;
+app.sanitizePublicMessage = sanitizePublicMessage;
+app.containsSensitiveDiagnostic = containsSensitiveDiagnostic;
 
 module.exports = app;

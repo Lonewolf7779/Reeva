@@ -1,13 +1,14 @@
 // tests/tiktok-extraction.test.cjs — Deterministic and Isolated Tests for TikTok Extraction Adapter
 "use strict";
 
-const test = require("node:test");
+const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const os = require("os");
 const crypto = require("crypto");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 
 const {
     extractTikTok,
@@ -479,7 +480,9 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
             const req = http.get({
                 host: "127.0.0.1",
                 port,
-                path: `/api/media/${registered.id}?download=1`
+                path: `/api/media/${registered.id}?download=1`,
+                agent: false,
+                headers: { "Connection": "close" }
             }, (res) => {
                 const chunks = [];
                 res.on("data", c => chunks.push(c));
@@ -512,6 +515,20 @@ test("TikTok HTTP Endpoint: Streams local file artifact cleanly with headers and
         if (typeof server.closeAllConnections === "function") {
             server.closeAllConnections();
         }
-        await new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error("Server teardown failed: server.close() did not complete within 2000ms"));
+            }, 2000);
+
+            server.close(() => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
     }
+});
+
+after(async () => {
+    http.globalAgent.destroy();
+    await stopDefaultEgressProxy();
 });

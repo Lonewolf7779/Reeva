@@ -14,6 +14,7 @@ process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-msp-${process.pid}`);
 
 const { MediaRegistry, defaultRegistry } = require("../lib/media-registry.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("../lib/extraction/adapters/youtube.cjs");
+const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 const app = require("../server.cjs");
 
 function ensureTempDir() {
@@ -27,8 +28,29 @@ before(async () => {
     await cleanStaleTempFiles();
 });
 
-function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
+function httpRequest({ method = "GET", path: reqPath, port, headers = {}, timeoutMs = 5000 }) {
     return new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = null;
+
+        const cleanup = () => {
+            if (timer) clearTimeout(timer);
+        };
+
+        const safeReject = (err) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(err);
+        };
+
+        const safeResolve = (val) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(val);
+        };
+
         const req = http.request({
             host: "127.0.0.1",
             port,
@@ -41,7 +63,7 @@ function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
             res.on("data", (chunk) => chunks.push(chunk));
             res.on("end", () => {
                 const rawBody = Buffer.concat(chunks);
-                resolve({
+                safeResolve({
                     status: res.statusCode,
                     headers: res.headers,
                     body: rawBody,
@@ -49,9 +71,20 @@ function httpRequest({ method = "GET", path: reqPath, port, headers = {} }) {
                     json: async () => JSON.parse(rawBody.toString("utf8"))
                 });
             });
-            res.on("error", reject);
+            res.on("error", safeReject);
         });
-        req.on("error", reject);
+
+        req.on("error", safeReject);
+
+        if (timeoutMs > 0) {
+            timer = setTimeout(() => {
+                const timeoutErr = new Error(`httpRequest timed out after ${timeoutMs}ms (${method} ${reqPath})`);
+                req.destroy(timeoutErr);
+                safeReject(timeoutErr);
+            }, timeoutMs);
+            if (timer.unref) timer.unref();
+        }
+
         req.end();
     });
 }
@@ -81,7 +114,7 @@ function trackServer(server) {
     return server;
 }
 
-async function closeServer(server) {
+async function closeServer(server, timeoutMs = 2000) {
     if (!server) return;
     if (server._sockets) {
         for (const s of server._sockets) {
@@ -96,7 +129,17 @@ async function closeServer(server) {
         try { server.closeAllConnections(); } catch (_) {}
     }
     if (server.listening) {
-        await new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                try { server.close(); } catch (_) {}
+                resolve();
+            }, timeoutMs);
+
+            server.close(() => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
     }
 }
 
@@ -804,7 +847,9 @@ test("Media Stream Protection (G5): Client abort while async stat is pending fol
     }
 });
 
-after(() => {
+after(async () => {
+    http.globalAgent.destroy();
+    await stopDefaultEgressProxy();
     try {
         if (fs.existsSync(REEVA_TEMP_DIR)) {
             fs.rmSync(REEVA_TEMP_DIR, { recursive: true, force: true });
