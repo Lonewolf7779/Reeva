@@ -20,6 +20,12 @@ const { ValidationError } = require("../lib/url-validator.cjs");
 const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 const { destroyHttpAgents } = require("../lib/http-client.cjs");
 
+const { createAppController } = require("../public/app.js");
+const stateModule = require("../public/js/state.js");
+const apiModule = require("../public/js/api.js");
+const uiModule = require("../public/js/ui.js");
+const i18nModule = require("../public/js/i18n.js");
+
 // Helper to close test HTTP server reliably
 async function closeServer(server) {
     if (!server) return;
@@ -499,105 +505,421 @@ test("Gating: URL and platform validation errors take precedence over disabled g
 });
 
 // =========================================================================
-// 3. Frontend Capability Safety & Initialization Tests
+// 3. Frontend Capability Safety & Availability-State Tests
 // =========================================================================
 
-test("Frontend Capability Safety: Platform buttons initialize disabled and adapt to capability state", () => {
-    const platforms = ["instagram", "facebook", "twitter", "pinterest", "youtube", "tiktok", "generic"];
-    const createMockButton = (plat) => {
-        const attributes = new Map();
-        const classes = new Set(["platform-btn"]);
+function createMockDOM(initialValues = {}) {
+    const createEl = (id, tag = "div", extra = {}) => {
+        const attrs = new Map();
+        const classes = new Set(extra.classes || []);
+        const elListeners = new Map();
         return {
-            dataset: { platform: plat },
-            disabled: false,
+            id,
+            tagName: tag.toUpperCase(),
+            disabled: extra.disabled !== undefined ? extra.disabled : false,
+            value: extra.value !== undefined ? extra.value : "",
+            checked: extra.checked !== undefined ? extra.checked : false,
+            textContent: "",
+            style: {},
+            dataset: extra.dataset || {},
             classList: {
                 add: (c) => classes.add(c),
                 remove: (c) => classes.delete(c),
                 contains: (c) => classes.has(c)
             },
-            setAttribute: (k, v) => attributes.set(k, String(v)),
-            removeAttribute: (k) => attributes.delete(k),
-            getAttribute: (k) => attributes.get(k) || null
+            setAttribute: (k, v) => attrs.set(k, String(v)),
+            getAttribute: (k) => attrs.get(k) || null,
+            removeAttribute: (k) => attrs.delete(k),
+            addEventListener: (evt, handler) => {
+                if (!elListeners.has(evt)) elListeners.set(evt, []);
+                elListeners.get(evt).push(handler);
+            },
+            dispatchEvent: (evt) => {
+                const handlers = elListeners.get(evt.type) || [];
+                handlers.forEach((h) => h(evt));
+            }
         };
     };
 
-    const buttons = platforms.map(createMockButton);
-
-    // Initial page load: all buttons must start disabled/pending
-    buttons.forEach((btn) => {
-        btn.disabled = true;
-        btn.setAttribute("aria-disabled", "true");
-        btn.classList.add("disabled");
-        btn.classList.remove("active");
-        btn.setAttribute("title", "Checking service availability...");
+    const platformBtns = ["instagram", "facebook", "twitter", "pinterest", "youtube", "tiktok", "generic"].map((plat) => {
+        return createEl(`btn-${plat}`, "button", {
+            classes: ["platform-btn"],
+            dataset: { platform: plat }
+        });
     });
 
-    buttons.forEach((btn) => {
+    const elementsById = {
+        "app-heading": createEl("app-heading"),
+        "app-subtitle": createEl("app-subtitle"),
+        "input-instruction": createEl("input-instruction"),
+        "lang-label": createEl("lang-label"),
+        "lang-select": createEl("lang-select", "select", { value: "en" }),
+        "get": createEl("get", "button", { classes: ["action"], disabled: true }),
+        "download": createEl("download", "button", { classes: ["action", "hidden"] }),
+        "url": createEl("url", "input", { value: initialValues.url !== undefined ? initialValues.url : "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+        "log": createEl("log", "div"),
+        "preview": createEl("preview", "video", { classes: ["hidden"] }),
+        "consent": createEl("consent", "input", { checked: initialValues.consent !== undefined ? initialValues.consent : true }),
+        "consent-text": createEl("consent-text"),
+        "why-consent": createEl("why-consent", "a"),
+        "footer-disclaimer": createEl("footer-disclaimer"),
+        "footer-copyright": createEl("footer-copyright")
+    };
+
+    const doc = {
+        getElementById: (id) => elementsById[id] || null,
+        querySelectorAll: (selector) => {
+            if (selector === ".platform-btn") return platformBtns;
+            return [];
+        },
+        elementsById,
+        platformBtns
+    };
+
+    return { doc, elementsById, platformBtns };
+}
+
+test("Frontend Capability Safety: Platform buttons and Get button initialize disabled", () => {
+    const { doc, elementsById, platformBtns } = createMockDOM();
+    const state = stateModule.createState();
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: apiModule,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: () => new Promise(() => {}) // pending
+    });
+
+    assert.strictEqual(app.getCapabilitiesLoaded(), false);
+    assert.strictEqual(elementsById.get.disabled, true);
+    assert.strictEqual(elementsById.get.getAttribute("aria-disabled"), "true");
+
+    platformBtns.forEach((btn) => {
         assert.strictEqual(btn.disabled, true);
         assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
         assert.strictEqual(btn.classList.contains("disabled"), true);
         assert.strictEqual(btn.classList.contains("active"), false);
     });
+});
 
-    // Test Case A: Capability fetch succeeds with partial enablement
-    const mockCaps = {
-        platforms: {
-            instagram: false,
-            facebook: false,
-            twitter: false,
-            pinterest: false,
-            youtube: true,
-            tiktok: false,
-            generic: false
+test("Frontend Capability Safety: No extraction request occurs before capabilities are successfully loaded", async () => {
+    const { doc, elementsById } = createMockDOM();
+    const state = stateModule.createState();
+    let fetchMediaCalls = 0;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async () => {
+            fetchMediaCalls++;
+            return { success: true };
         }
     };
 
-    let firstAvailable = null;
-    buttons.forEach((btn) => {
-        const plat = btn.dataset.platform;
-        if (plat && mockCaps.platforms[plat] === true) {
-            btn.disabled = false;
-            btn.removeAttribute("aria-disabled");
-            btn.classList.remove("disabled");
-            btn.removeAttribute("title");
-            if (!firstAvailable) {
-                firstAvailable = plat;
-            }
-        } else {
-            btn.disabled = true;
-            btn.setAttribute("aria-disabled", "true");
-            btn.classList.add("disabled");
-            btn.classList.remove("active");
-            btn.setAttribute("title", "This platform is currently disabled.");
+    const mockFetch = () => new Promise(() => {}); // never resolves during check
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
+    });
+
+    assert.strictEqual(app.getCapabilitiesLoaded(), false);
+    assert.strictEqual(elementsById.get.disabled, true);
+
+    await app.handleGetMedia();
+
+    assert.strictEqual(fetchMediaCalls, 0, "fetchMedia must not be invoked before capabilities load");
+    assert.match(elementsById.log.textContent, /Unable to verify available services/);
+    assert.strictEqual(state.getStatus(), "idle");
+});
+
+test("Frontend Capability Safety: No extraction request occurs after capability request fails", async () => {
+    const { doc, elementsById } = createMockDOM();
+    const state = stateModule.createState();
+    let fetchMediaCalls = 0;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async () => {
+            fetchMediaCalls++;
+            return { success: true };
         }
+    };
+
+    const mockFetch = async () => ({ ok: false, status: 500 });
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
     });
 
-    assert.strictEqual(firstAvailable, "youtube");
-    const ytBtn = buttons.find((b) => b.dataset.platform === "youtube");
-    assert.strictEqual(ytBtn.disabled, false);
-    assert.strictEqual(ytBtn.getAttribute("aria-disabled"), null);
-    assert.strictEqual(ytBtn.classList.contains("disabled"), false);
+    await app.capabilitiesPromise;
 
-    const igBtn = buttons.find((b) => b.dataset.platform === "instagram");
+    assert.strictEqual(app.getCapabilitiesLoaded(), false);
+    assert.strictEqual(app.getVerifiedPlatforms(), null);
+    assert.strictEqual(elementsById.get.disabled, true);
+
+    await app.handleGetMedia();
+
+    assert.strictEqual(fetchMediaCalls, 0, "fetchMedia must not be invoked after capabilities failure");
+    assert.match(elementsById.log.textContent, /Unable to verify available services/);
+});
+
+test("Frontend Capability Safety: Selected platform cannot silently fall back to default Instagram when availability is unknown", async () => {
+    const { doc, elementsById } = createMockDOM({ url: "https://www.instagram.com/reel/C3456789abc/" });
+    const state = stateModule.createState();
+    assert.strictEqual(state.getPlatform(), "instagram");
+
+    let attemptedPlatform = null;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async (plat) => {
+            attemptedPlatform = plat;
+            return { success: true };
+        }
+    };
+
+    const mockFetch = async () => ({ ok: false, status: 503 });
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
+    });
+
+    await app.capabilitiesPromise;
+
+    // Platform must be cleared and not silently left at instagram
+    assert.strictEqual(state.getPlatform(), null);
+    assert.strictEqual(elementsById.get.disabled, true);
+
+    await app.handleGetMedia();
+
+    assert.strictEqual(attemptedPlatform, null, "Instagram extraction must not be dispatched as silent fallback");
+    assert.match(elementsById.log.textContent, /Unable to verify available services/);
+});
+
+test("Frontend Capability Safety: No extraction request occurs when all platforms are disabled", async () => {
+    const { doc, elementsById } = createMockDOM();
+    const state = stateModule.createState();
+    let fetchMediaCalls = 0;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async () => {
+            fetchMediaCalls++;
+            return { success: true };
+        }
+    };
+
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({
+            capabilities: {
+                platforms: {
+                    instagram: false,
+                    facebook: false,
+                    twitter: false,
+                    pinterest: false,
+                    youtube: false,
+                    tiktok: false,
+                    generic: false
+                },
+                audioOnly: false
+            }
+        })
+    });
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
+    });
+
+    await app.capabilitiesPromise;
+
+    assert.strictEqual(app.getCapabilitiesLoaded(), true);
+    assert.strictEqual(state.getPlatform(), null);
+    assert.strictEqual(elementsById.get.disabled, true);
+    assert.match(elementsById.log.textContent, /All platform integrations are currently disabled/);
+
+    await app.handleGetMedia();
+
+    assert.strictEqual(fetchMediaCalls, 0, "No extraction can occur when all platforms are disabled");
+});
+
+test("Frontend Capability Safety: A platform explicitly reported as disabled cannot be submitted", async () => {
+    const { doc, elementsById, platformBtns } = createMockDOM();
+    const state = stateModule.createState();
+    let fetchMediaCalls = 0;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async () => {
+            fetchMediaCalls++;
+            return { success: true };
+        }
+    };
+
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({
+            capabilities: {
+                platforms: {
+                    instagram: false,
+                    facebook: false,
+                    twitter: false,
+                    pinterest: false,
+                    youtube: true,
+                    tiktok: false,
+                    generic: false
+                },
+                audioOnly: false
+            }
+        })
+    });
+
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
+    });
+
+    await app.capabilitiesPromise;
+
+    assert.strictEqual(state.getPlatform(), "youtube");
+
+    // Disabled instagram button cannot be clicked
+    const igBtn = platformBtns.find((b) => b.dataset.platform === "instagram");
     assert.strictEqual(igBtn.disabled, true);
-    assert.strictEqual(igBtn.getAttribute("aria-disabled"), "true");
-    assert.strictEqual(igBtn.classList.contains("disabled"), true);
+    igBtn.dispatchEvent({ type: "click" });
+    assert.strictEqual(state.getPlatform(), "youtube", "Clicking disabled instagram button must not select it");
 
-    // Test Case B: Capability fetch failure keeps all buttons disabled and clears active state
-    buttons.forEach((btn) => {
-        btn.disabled = true;
-        btn.setAttribute("aria-disabled", "true");
-        btn.classList.add("disabled");
-        btn.classList.remove("active");
-        btn.setAttribute("title", "Service capabilities unavailable.");
+    // Forced state modification is still blocked by handleGetMedia
+    state.setPlatform("instagram");
+    await app.handleGetMedia();
+
+    assert.strictEqual(fetchMediaCalls, 0, "Disabled platform must not be submitted");
+    assert.match(elementsById.log.textContent, /This platform is currently disabled/);
+});
+
+test("Frontend Capability Safety: A platform explicitly reported as enabled can be submitted after successful initialization", async () => {
+    const { doc, elementsById } = createMockDOM({ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", consent: true });
+    const state = stateModule.createState();
+    let dispatchedPlatform = null;
+    let dispatchedUrl = null;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async (plat, url) => {
+            dispatchedPlatform = plat;
+            dispatchedUrl = url;
+            return {
+                success: true,
+                streamUrl: "/api/media/med_12345678abcdef",
+                downloadUrl: "/api/media/med_12345678abcdef?download=1"
+            };
+        }
+    };
+
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({
+            capabilities: {
+                platforms: {
+                    instagram: false,
+                    facebook: false,
+                    twitter: false,
+                    pinterest: false,
+                    youtube: true,
+                    tiktok: false,
+                    generic: false
+                },
+                audioOnly: false
+            }
+        })
     });
 
-    buttons.forEach((btn) => {
-        assert.strictEqual(btn.disabled, true);
-        assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
-        assert.strictEqual(btn.classList.contains("disabled"), true);
-        assert.strictEqual(btn.classList.contains("active"), false);
+    const app = createAppController({
+        document: doc,
+        state,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
     });
+
+    await app.capabilitiesPromise;
+
+    assert.strictEqual(state.getPlatform(), "youtube");
+    assert.strictEqual(elementsById.get.disabled, false);
+
+    await app.handleGetMedia();
+
+    assert.strictEqual(dispatchedPlatform, "youtube");
+    assert.strictEqual(dispatchedUrl, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    assert.strictEqual(state.getStatus(), "success");
+    assert.strictEqual(elementsById.download.classList.contains("hidden"), false);
+    assert.strictEqual(elementsById.preview.classList.contains("hidden"), false);
+});
+
+test("Frontend Capability Safety: Consent validation, empty URL check, and cancellation guards remain intact", async () => {
+    // 1. Consent validation
+    const { doc: docNoConsent, elementsById: elNoConsent } = createMockDOM({ consent: false, url: "https://youtube.com/watch?v=123" });
+    const state1 = stateModule.createState();
+    let fetchCalls = 0;
+    let alerted = null;
+    const mockApi = {
+        ...apiModule,
+        fetchMedia: async () => { fetchCalls++; return { success: true }; }
+    };
+    const mockFetch = async () => ({
+        ok: true,
+        json: async () => ({ capabilities: { platforms: { youtube: true } } })
+    });
+
+    const app1 = createAppController({
+        document: docNoConsent,
+        state: state1,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch,
+        window: { alert: (msg) => { alerted = msg; } }
+    });
+    await app1.capabilitiesPromise;
+    await app1.handleGetMedia();
+    assert.strictEqual(fetchCalls, 0, "No request without consent");
+    assert.ok(alerted);
+
+    // 2. Empty URL validation
+    const { doc: docEmptyUrl, elementsById: elEmptyUrl } = createMockDOM({ consent: true, url: "" });
+    const state2 = stateModule.createState();
+    const app2 = createAppController({
+        document: docEmptyUrl,
+        state: state2,
+        api: mockApi,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: mockFetch
+    });
+    await app2.capabilitiesPromise;
+    await app2.handleGetMedia();
+    assert.strictEqual(fetchCalls, 0, "No request with empty URL");
+    assert.match(elEmptyUrl.log.textContent, /Please paste a video link first/i);
 });
 
 // =========================================================================
