@@ -23,7 +23,8 @@ for (const file of testFiles) {
         "--test-force-exit",
         filePath
     ], {
-        stdio: "inherit",
+        stdio: ["ignore", "inherit", "inherit"],
+        timeout: 30000,
         env: {
             ...process.env,
             NODE_ENV: "test"
@@ -31,6 +32,14 @@ for (const file of testFiles) {
     });
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
+    if (result.error) {
+        console.error(`\nERROR executing ${file}: ${result.error.message} in ${duration}s`);
+        process.exit(1);
+    }
+    if (result.signal) {
+        console.error(`\nTERMINATED by signal ${result.signal} on ${file} in ${duration}s`);
+        process.exit(1);
+    }
     if (result.status !== 0) {
         console.error(`\nFAILED: ${file} (exit code ${result.status}) in ${duration}s`);
         process.exit(result.status || 1);
