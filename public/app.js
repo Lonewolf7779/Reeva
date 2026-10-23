@@ -62,11 +62,14 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // =========================================================================
-    // 2. Platform Selection
+    // 2. Platform Selection & Capabilities Initialization
     // =========================================================================
     if (elements.platformBtns) {
         elements.platformBtns.forEach((btn) => {
             btn.addEventListener("click", () => {
+                if (btn.disabled || btn.getAttribute("aria-disabled") === "true") {
+                    return;
+                }
                 const targetPlatform = btn.dataset ? btn.dataset.platform : null;
                 if (!targetPlatform || !state.setPlatform(targetPlatform)) {
                     return;
@@ -79,6 +82,43 @@ document.addEventListener("DOMContentLoaded", () => {
                 ui.setLog(t("platform.selected", { platform: platformLabel }, currentLang), "info");
             });
         });
+    }
+
+    // Safely query public capabilities to reflect platform availability in UI
+    if (typeof fetch === "function") {
+        fetch("/api/capabilities")
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                const caps = data && data.capabilities ? data.capabilities : null;
+                if (caps && caps.platforms && elements.platformBtns) {
+                    let firstAvailable = null;
+                    elements.platformBtns.forEach((btn) => {
+                        const plat = btn.dataset ? btn.dataset.platform : null;
+                        if (plat && caps.platforms[plat] === false) {
+                            btn.disabled = true;
+                            btn.classList.add("disabled");
+                            btn.setAttribute("aria-disabled", "true");
+                            btn.setAttribute("title", "This platform is currently disabled.");
+                        } else if (plat && caps.platforms[plat] === true && !firstAvailable) {
+                            firstAvailable = plat;
+                        }
+                    });
+
+                    // If currently selected platform is disabled, switch to first available
+                    const currentPlatform = state.getPlatform();
+                    if (currentPlatform && caps.platforms[currentPlatform] === false) {
+                        if (firstAvailable) {
+                            state.setPlatform(firstAvailable);
+                            ui.setActivePlatform(firstAvailable);
+                        } else {
+                            ui.setLog("All platform integrations are currently disabled.", "error");
+                        }
+                    }
+                }
+            })
+            .catch(() => {
+                // Graceful degradation: retain default button states if capabilities fetch fails
+            });
     }
 
     // =========================================================================
