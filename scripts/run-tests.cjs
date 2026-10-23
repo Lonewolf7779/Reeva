@@ -20,7 +20,6 @@ for (const file of testFiles) {
     const result = spawnSync(process.execPath, [
         "--test",
         "--test-timeout=20000",
-        "--test-force-exit",
         filePath
     ], {
         stdio: ["ignore", "inherit", "inherit"],
