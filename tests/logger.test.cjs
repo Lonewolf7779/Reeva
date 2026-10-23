@@ -4,6 +4,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("http");
+const os = require("os");
+const path = require("path");
+
+// Isolate temporary directory for this test worker to prevent cross-worker test interference
+process.env.REEVA_TEMP_DIR = path.join(os.tmpdir(), `reeva-logger-${process.pid}`);
 
 const {
     generateRequestId,
@@ -504,7 +509,7 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
             platform: "instagram",
             type: "video",
             title: "Bad File",
-            localFilePath: path.resolve("../outside.mp4")
+            localFilePath: path.resolve(os.tmpdir(), `forbidden_outside_${Date.now()}.mp4`)
         });
 
         const resBad = await httpRequest({ port, path: `/api/media/${badReg.id}` });
@@ -520,6 +525,8 @@ test("Error Response Test 5: Streaming lifecycle logs start, success, and error 
         logger.info = originalInfo;
         logger.error = originalError;
         await closeServer(server);
+        try { defaultRegistry.deleteMedia(reg.id); } catch (_) {}
+        try { if (typeof badReg !== "undefined" && badReg) defaultRegistry.deleteMedia(badReg.id); } catch (_) {}
         if (fs.existsSync(testFile)) {
             try { fs.unlinkSync(testFile); } catch (_) {}
         }

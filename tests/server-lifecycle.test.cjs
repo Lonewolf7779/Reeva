@@ -647,6 +647,9 @@ test("Subprocess exits cleanly with code 0 on SIGINT / SIGTERM", async () => {
                 });
             });
         }
+        try {
+            child.unref();
+        } catch (_) {}
     }
 });
 
