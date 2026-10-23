@@ -417,7 +417,8 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
             sourceUrl: req.query.url,
             mode: req.query.mode,
             requestId: req.id,
-            signal: abortController.signal
+            signal: abortController.signal,
+            features: serverConfig.features
         });
 
         const { media } = extraction;
@@ -980,6 +981,24 @@ app.get("/api/proxy", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (
             message: "Missing media reference parameter."
         },
         requestId: req.id
+    });
+});
+
+// ================== PUBLIC CAPABILITIES ENDPOINT ==================
+app.get("/api/capabilities", (req, res) => {
+    res.json({
+        capabilities: {
+            platforms: {
+                instagram: Boolean(serverConfig.features.instagram),
+                facebook: Boolean(serverConfig.features.facebook),
+                twitter: Boolean(serverConfig.features.twitter),
+                pinterest: Boolean(serverConfig.features.pinterest),
+                youtube: Boolean(serverConfig.features.youtube),
+                tiktok: Boolean(serverConfig.features.tiktok),
+                generic: Boolean(serverConfig.features.generic)
+            },
+            audioOnly: Boolean(serverConfig.features.audioOnly)
+        }
     });
 });
 

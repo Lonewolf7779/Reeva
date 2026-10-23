@@ -1,20 +1,24 @@
 // public/app.js — Frontend Application Orchestrator
 "use strict";
 
-document.addEventListener("DOMContentLoaded", () => {
-    // Resolve modular dependencies from namespace
-    const state = (window.Reeva && window.Reeva.state && window.Reeva.state.defaultState) || null;
-    const api = (window.Reeva && window.Reeva.api) || null;
-    const uiModule = (window.Reeva && window.Reeva.ui) || null;
-    const i18n = (window.Reeva && window.Reeva.i18n) || null;
+function createAppController(options = {}) {
+    const win = options.window || (typeof window !== "undefined" ? window : globalThis);
+    const doc = options.document || (typeof document !== "undefined" ? document : null);
+    const state = options.state || (win && win.Reeva && win.Reeva.state && win.Reeva.state.defaultState) || null;
+    const api = options.api || (win && win.Reeva && win.Reeva.api) || null;
+    const uiModule = options.uiModule || (win && win.Reeva && win.Reeva.ui) || null;
+    const i18n = options.i18n || (win && win.Reeva && win.Reeva.i18n) || null;
+    const fetchFn = options.fetchFn || (win && typeof win.fetch === "function" ? win.fetch.bind(win) : (typeof fetch === "function" ? fetch : null));
 
-    if (!state || !api || !uiModule || !i18n) {
-        console.error("Reeva frontend architecture dependencies failed to load.");
-        return;
+    if (!doc || !state || !api || !uiModule || !i18n) {
+        if (typeof console !== "undefined" && console.error) {
+            console.error("Reeva frontend architecture dependencies failed to load.");
+        }
+        return null;
     }
 
-    const ui = uiModule.createUiController(document);
-    if (!ui) return;
+    const ui = uiModule.createUiController(doc);
+    if (!ui) return null;
 
     const { t } = i18n;
     const { elements } = ui;
@@ -23,36 +27,62 @@ document.addEventListener("DOMContentLoaded", () => {
     let activeAbortController = null;
     let isRequestInProgress = false;
 
+    // Availability and capability state tracking
+    let capabilitiesLoaded = false;
+    let verifiedPlatforms = null;
+
+    // Platform selection must be prevented before capabilities load.
+    // Clear initial state platform and disable submission and platform buttons pending verification.
+    if (typeof state.clearPlatform === "function") {
+        state.clearPlatform();
+    }
+
+    if (elements.getBtn) {
+        elements.getBtn.disabled = true;
+        elements.getBtn.setAttribute("aria-disabled", "true");
+    }
+
+    if (elements.platformBtns) {
+        elements.platformBtns.forEach((btn) => {
+            btn.disabled = true;
+            btn.setAttribute("aria-disabled", "true");
+            btn.classList.add("disabled");
+            btn.classList.remove("active");
+            btn.setAttribute("title", "Checking service availability...");
+        });
+    }
+    ui.setActivePlatform("");
+
     // =========================================================================
     // 1. Language Resolution and Initialization
     // =========================================================================
-    // Resolution order:
-    // 1. Stored user preference in localStorage
-    // 2. Browser language (navigator.languages / navigator.language)
-    // 3. English fallback
     const initialLang = i18n.resolveInitialLanguage({
-        storage: typeof localStorage !== "undefined" ? localStorage : null,
-        nav: typeof navigator !== "undefined" ? navigator : null
+        storage: win && typeof win.localStorage !== "undefined" ? win.localStorage : (typeof localStorage !== "undefined" ? localStorage : null),
+        nav: win && typeof win.navigator !== "undefined" ? win.navigator : (typeof navigator !== "undefined" ? navigator : null)
     });
 
     state.setLanguage(initialLang);
     ui.applyTranslations(initialLang, t, i18n.getLanguageDirection);
 
-    // Language selector change handler
     if (elements.langSelect) {
         elements.langSelect.addEventListener("change", (e) => {
             const selectedLang = e.target.value;
             const safeLang = i18n.resolveLanguage(selectedLang, i18n.SUPPORTED_LANGUAGES, i18n.DEFAULT_LANGUAGE);
 
             state.setLanguage(safeLang);
-            i18n.setStoredLanguage(safeLang, typeof localStorage !== "undefined" ? localStorage : null);
+            i18n.setStoredLanguage(
+                safeLang,
+                win && typeof win.localStorage !== "undefined" ? win.localStorage : (typeof localStorage !== "undefined" ? localStorage : null)
+            );
             ui.applyTranslations(safeLang, t, i18n.getLanguageDirection);
 
-            // If an extraction status is currently displayed, re-render in new language
             const currentStatus = state.getStatus();
             if (currentStatus === "idle") {
-                const platformLabel = t(`platform.${state.getPlatform()}`, {}, safeLang);
-                ui.setLog(t("platform.selected", { platform: platformLabel }, safeLang), "info");
+                const activePlat = state.getPlatform();
+                if (activePlat && verifiedPlatforms && verifiedPlatforms[activePlat] === true) {
+                    const platformLabel = t(`platform.${activePlat}`, {}, safeLang) || activePlat;
+                    ui.setLog(t("platform.selected", { platform: platformLabel }, safeLang), "info");
+                }
             } else if (currentStatus === "success") {
                 ui.setLog(t("status.success", {}, safeLang), "success");
             } else if (currentStatus === "loading") {
@@ -62,17 +92,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // =========================================================================
-    // 2. Platform Selection
+    // 2. Platform Selection Event Listeners
     // =========================================================================
     if (elements.platformBtns) {
         elements.platformBtns.forEach((btn) => {
             btn.addEventListener("click", () => {
+                if (!capabilitiesLoaded || !verifiedPlatforms || btn.disabled || btn.getAttribute("aria-disabled") === "true") {
+                    return;
+                }
                 const targetPlatform = btn.dataset ? btn.dataset.platform : null;
-                if (!targetPlatform || !state.setPlatform(targetPlatform)) {
+                if (!targetPlatform || verifiedPlatforms[targetPlatform] !== true) {
+                    return;
+                }
+                if (!state.setPlatform(targetPlatform)) {
                     return;
                 }
 
                 ui.setActivePlatform(targetPlatform);
+
+                if (elements.getBtn && !isRequestInProgress) {
+                    elements.getBtn.disabled = false;
+                    elements.getBtn.removeAttribute("aria-disabled");
+                }
 
                 const currentLang = state.getLanguage();
                 const platformLabel = t(`platform.${targetPlatform}`, {}, currentLang) || targetPlatform;
@@ -82,40 +123,178 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // =========================================================================
-    // 3. Consent Dialog
+    // 3. Capabilities Resolution
+    // =========================================================================
+    async function loadCapabilities() {
+        if (!fetchFn) {
+            capabilitiesLoaded = false;
+            verifiedPlatforms = null;
+            if (typeof state.clearPlatform === "function") {
+                state.clearPlatform();
+            }
+            if (elements.getBtn) {
+                elements.getBtn.disabled = true;
+                elements.getBtn.setAttribute("aria-disabled", "true");
+            }
+            if (elements.platformBtns) {
+                elements.platformBtns.forEach((btn) => {
+                    btn.disabled = true;
+                    btn.setAttribute("aria-disabled", "true");
+                    btn.classList.add("disabled");
+                    btn.classList.remove("active");
+                    btn.setAttribute("title", "Service capabilities unavailable.");
+                });
+            }
+            ui.setActivePlatform("");
+            ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
+            return false;
+        }
+
+        try {
+            const res = await fetchFn("/api/capabilities");
+            if (!res || !res.ok) {
+                throw new Error(`Capabilities request failed: HTTP ${res ? res.status : "unknown"}`);
+            }
+            const data = await res.json();
+            const caps = data && data.capabilities ? data.capabilities : null;
+            if (!caps || !caps.platforms || typeof caps.platforms !== "object") {
+                throw new Error("Invalid capabilities payload received.");
+            }
+
+            capabilitiesLoaded = true;
+            verifiedPlatforms = caps.platforms;
+
+            let firstAvailable = null;
+            if (elements.platformBtns) {
+                elements.platformBtns.forEach((btn) => {
+                    const plat = btn.dataset ? btn.dataset.platform : null;
+                    if (plat && verifiedPlatforms[plat] === true) {
+                        btn.disabled = false;
+                        btn.removeAttribute("aria-disabled");
+                        btn.classList.remove("disabled");
+                        btn.removeAttribute("title");
+                        if (!firstAvailable) {
+                            firstAvailable = plat;
+                        }
+                    } else {
+                        btn.disabled = true;
+                        btn.setAttribute("aria-disabled", "true");
+                        btn.classList.add("disabled");
+                        btn.classList.remove("active");
+                        btn.setAttribute("title", "This platform is currently disabled.");
+                    }
+                });
+            }
+
+            if (firstAvailable) {
+                state.setPlatform(firstAvailable);
+                ui.setActivePlatform(firstAvailable);
+                if (elements.getBtn && !isRequestInProgress) {
+                    elements.getBtn.disabled = false;
+                    elements.getBtn.removeAttribute("aria-disabled");
+                }
+                const currentLang = state.getLanguage();
+                const platformLabel = t(`platform.${firstAvailable}`, {}, currentLang) || firstAvailable;
+                ui.setLog(t("platform.selected", { platform: platformLabel }, currentLang), "info");
+            } else {
+                if (typeof state.clearPlatform === "function") {
+                    state.clearPlatform();
+                }
+                ui.setActivePlatform("");
+                if (elements.getBtn) {
+                    elements.getBtn.disabled = true;
+                    elements.getBtn.setAttribute("aria-disabled", "true");
+                }
+                ui.setLog("All platform integrations are currently disabled.", "error");
+            }
+            return true;
+        } catch (_) {
+            capabilitiesLoaded = false;
+            verifiedPlatforms = null;
+            if (typeof state.clearPlatform === "function") {
+                state.clearPlatform();
+            }
+            if (elements.getBtn) {
+                elements.getBtn.disabled = true;
+                elements.getBtn.setAttribute("aria-disabled", "true");
+            }
+            if (elements.platformBtns) {
+                elements.platformBtns.forEach((btn) => {
+                    btn.disabled = true;
+                    btn.setAttribute("aria-disabled", "true");
+                    btn.classList.add("disabled");
+                    btn.classList.remove("active");
+                    btn.setAttribute("title", "Service capabilities unavailable.");
+                });
+            }
+            ui.setActivePlatform("");
+            ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
+            return false;
+        }
+    }
+
+    // Safely invoke capabilities probe
+    const capabilitiesPromise = loadCapabilities();
+
+    // =========================================================================
+    // 4. Consent Dialog
     // =========================================================================
     if (elements.whyConsent) {
         elements.whyConsent.addEventListener("click", (e) => {
             e.preventDefault();
-            alert(t("consent.alert", {}, state.getLanguage()));
+            const alertFn = (win && typeof win.alert === "function") ? win.alert : (typeof alert === "function" ? alert : null);
+            if (alertFn) {
+                alertFn(t("consent.alert", {}, state.getLanguage()));
+            }
         });
     }
 
     // =========================================================================
-    // 4. Media Extraction Trigger with Race-Condition Protection
+    // 5. Media Extraction Trigger with Complete Capability Guards
     // =========================================================================
     async function handleGetMedia() {
         const currentLang = state.getLanguage();
 
-        // Consent validation
-        if (!ui.isConsentChecked()) {
-            alert(t("consent.required", {}, currentLang));
+        // 1. Availability validation: Capabilities must be successfully verified
+        if (!capabilitiesLoaded || !verifiedPlatforms) {
+            ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
             return;
         }
 
-        // URL input validation
+        // 2. Selected platform validation: Platform must be selected and explicitly enabled
+        const activePlatform = state.getPlatform();
+        if (!activePlatform || verifiedPlatforms[activePlatform] !== true) {
+            const hasAnyEnabled = Object.values(verifiedPlatforms).some((v) => v === true);
+            if (!hasAnyEnabled) {
+                ui.setLog("All platform integrations are currently disabled.", "error");
+            } else {
+                ui.setLog("This platform is currently disabled.", "error");
+            }
+            return;
+        }
+
+        // 3. Consent validation
+        if (!ui.isConsentChecked()) {
+            const alertFn = (win && typeof win.alert === "function") ? win.alert : (typeof alert === "function" ? alert : null);
+            if (alertFn) {
+                alertFn(t("consent.required", {}, currentLang));
+            }
+            return;
+        }
+
+        // 4. URL input validation
         const rawUrl = ui.getUrlInput();
         if (!rawUrl) {
             ui.setLog(t("status.empty_url", {}, currentLang), "error");
             return;
         }
 
-        // Duplicate click guard: prevent multiple identical clicks while loading
+        // 5. Duplicate click guard: prevent multiple identical clicks while loading
         if (isRequestInProgress) {
             return;
         }
 
-        // Abort any lingering previous network request
+        // 6. Abort any lingering previous network request
         if (activeAbortController) {
             try {
                 activeAbortController.abort();
@@ -123,7 +302,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         activeAbortController = new AbortController();
 
-        // Increment monotonically increasing request token
+        // 7. Increment monotonically increasing request token
         const requestId = state.startRequest();
         isRequestInProgress = true;
 
@@ -135,8 +314,9 @@ document.addEventListener("DOMContentLoaded", () => {
         ui.setDownloadButtonVisible(false);
 
         try {
-            const result = await api.fetchMedia(state.getPlatform(), rawUrl, {
-                signal: activeAbortController.signal
+            const result = await api.fetchMedia(activePlatform, rawUrl, {
+                signal: activeAbortController.signal,
+                fetchFn
             });
 
             // If a newer request has started in the meantime, discard stale response
@@ -193,10 +373,14 @@ document.addEventListener("DOMContentLoaded", () => {
             const renderLang = state.getLanguage();
             ui.setLog(t("status.network_error", { message: err.message || "Unknown error" }, renderLang), "error");
         } finally {
-            // Only restore button state if this is still the active request
             if (state.isCurrentRequest(requestId)) {
                 isRequestInProgress = false;
                 ui.setLoading(false);
+                const activePlat = state.getPlatform();
+                if (elements.getBtn && (!capabilitiesLoaded || !verifiedPlatforms || !activePlat || verifiedPlatforms[activePlat] !== true)) {
+                    elements.getBtn.disabled = true;
+                    elements.getBtn.setAttribute("aria-disabled", "true");
+                }
             }
         }
     }
@@ -205,7 +389,6 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.getBtn.addEventListener("click", handleGetMedia);
     }
 
-    // Keyboard accessibility: Enter in URL input triggers extraction
     if (elements.urlIn) {
         elements.urlIn.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
@@ -216,19 +399,45 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // =========================================================================
-    // 5. Download Trigger
+    // 6. Download Trigger
     // =========================================================================
     if (elements.downloadBtn) {
         elements.downloadBtn.addEventListener("click", () => {
             const downloadUrl = state.getDownloadUrl();
             if (!downloadUrl) return;
 
-            // Security check: validate media URL before calling window.open
             if (!api.isValidMediaUrl(downloadUrl)) {
                 return;
             }
 
-            window.open(downloadUrl, "_blank", "noopener,noreferrer");
+            const openFn = (win && typeof win.open === "function") ? win.open : (typeof window !== "undefined" && window.open ? window.open : null);
+            if (openFn) {
+                openFn(downloadUrl, "_blank", "noopener,noreferrer");
+            }
         });
     }
-});
+
+    return {
+        handleGetMedia,
+        loadCapabilities,
+        capabilitiesPromise,
+        getCapabilitiesLoaded: () => capabilitiesLoaded,
+        getVerifiedPlatforms: () => verifiedPlatforms,
+        elements,
+        state,
+        ui
+    };
+}
+
+if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("DOMContentLoaded", () => {
+        createAppController();
+    });
+}
+
+if (typeof module === "object" && module.exports) {
+    module.exports = { createAppController };
+} else if (typeof window !== "undefined") {
+    window.Reeva = window.Reeva || {};
+    window.Reeva.app = { createAppController };
+}

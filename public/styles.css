@@ -84,6 +84,15 @@ p {
     box-shadow: 0 0 12px rgba(127, 90, 240, 0.5);
 }
 
+.platform-btn:disabled,
+.platform-btn.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+    transform: none;
+    box-shadow: none;
+}
+
 .platform-btn:focus-visible,
 button.action:focus-visible,
 input[type=text]:focus-visible,
