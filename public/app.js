@@ -64,10 +64,22 @@ document.addEventListener("DOMContentLoaded", () => {
     // =========================================================================
     // 2. Platform Selection & Capabilities Initialization
     // =========================================================================
+    let capabilitiesLoaded = false;
+
+    // Platform selection must be prevented before capabilities load.
+    // Buttons start disabled/pending and only become selectable if the server explicitly marks them enabled.
     if (elements.platformBtns) {
         elements.platformBtns.forEach((btn) => {
+            btn.disabled = true;
+            btn.setAttribute("aria-disabled", "true");
+            btn.classList.add("disabled");
+            btn.classList.remove("active");
+            btn.setAttribute("title", "Checking service availability...");
+        });
+
+        elements.platformBtns.forEach((btn) => {
             btn.addEventListener("click", () => {
-                if (btn.disabled || btn.getAttribute("aria-disabled") === "true") {
+                if (!capabilitiesLoaded || btn.disabled || btn.getAttribute("aria-disabled") === "true") {
                     return;
                 }
                 const targetPlatform = btn.dataset ? btn.dataset.platform : null;
@@ -87,38 +99,89 @@ document.addEventListener("DOMContentLoaded", () => {
     // Safely query public capabilities to reflect platform availability in UI
     if (typeof fetch === "function") {
         fetch("/api/capabilities")
-            .then((res) => (res.ok ? res.json() : null))
+            .then((res) => {
+                if (!res.ok) {
+                    throw new Error(`Capabilities request failed: HTTP ${res.status}`);
+                }
+                return res.json();
+            })
             .then((data) => {
                 const caps = data && data.capabilities ? data.capabilities : null;
-                if (caps && caps.platforms && elements.platformBtns) {
-                    let firstAvailable = null;
+                if (!caps || !caps.platforms) {
+                    throw new Error("Invalid capabilities payload received.");
+                }
+
+                capabilitiesLoaded = true;
+                let firstAvailable = null;
+
+                if (elements.platformBtns) {
                     elements.platformBtns.forEach((btn) => {
                         const plat = btn.dataset ? btn.dataset.platform : null;
-                        if (plat && caps.platforms[plat] === false) {
+                        if (plat && caps.platforms[plat] === true) {
+                            btn.disabled = false;
+                            btn.removeAttribute("aria-disabled");
+                            btn.classList.remove("disabled");
+                            btn.removeAttribute("title");
+                            if (!firstAvailable) {
+                                firstAvailable = plat;
+                            }
+                        } else {
                             btn.disabled = true;
-                            btn.classList.add("disabled");
                             btn.setAttribute("aria-disabled", "true");
+                            btn.classList.add("disabled");
+                            btn.classList.remove("active");
                             btn.setAttribute("title", "This platform is currently disabled.");
-                        } else if (plat && caps.platforms[plat] === true && !firstAvailable) {
-                            firstAvailable = plat;
                         }
                     });
 
-                    // If currently selected platform is disabled, switch to first available
+                    // If currently selected platform is disabled or unset, switch to first available
                     const currentPlatform = state.getPlatform();
-                    if (currentPlatform && caps.platforms[currentPlatform] === false) {
+                    if (!currentPlatform || caps.platforms[currentPlatform] !== true) {
                         if (firstAvailable) {
                             state.setPlatform(firstAvailable);
                             ui.setActivePlatform(firstAvailable);
+                            const currentLang = state.getLanguage();
+                            const platformLabel = t(`platform.${firstAvailable}`, {}, currentLang) || firstAvailable;
+                            ui.setLog(t("platform.selected", { platform: platformLabel }, currentLang), "info");
                         } else {
+                            ui.setActivePlatform("");
                             ui.setLog("All platform integrations are currently disabled.", "error");
                         }
+                    } else {
+                        ui.setActivePlatform(currentPlatform);
+                        const currentLang = state.getLanguage();
+                        const platformLabel = t(`platform.${currentPlatform}`, {}, currentLang) || currentPlatform;
+                        ui.setLog(t("platform.selected", { platform: platformLabel }, currentLang), "info");
                     }
                 }
             })
             .catch(() => {
-                // Graceful degradation: retain default button states if capabilities fetch fails
+                // If capability fetch fails, buttons remain disabled and a clear recovery/status message is shown
+                capabilitiesLoaded = false;
+                if (elements.platformBtns) {
+                    elements.platformBtns.forEach((btn) => {
+                        btn.disabled = true;
+                        btn.setAttribute("aria-disabled", "true");
+                        btn.classList.add("disabled");
+                        btn.classList.remove("active");
+                        btn.setAttribute("title", "Service capabilities unavailable.");
+                    });
+                }
+                ui.setActivePlatform("");
+                ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
             });
+    } else {
+        capabilitiesLoaded = false;
+        if (elements.platformBtns) {
+            elements.platformBtns.forEach((btn) => {
+                btn.disabled = true;
+                btn.setAttribute("aria-disabled", "true");
+                btn.classList.add("disabled");
+                btn.classList.remove("active");
+            });
+        }
+        ui.setActivePlatform("");
+        ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
     }
 
     // =========================================================================
