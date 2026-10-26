@@ -1,6 +1,16 @@
 // public/app.js — Frontend Application Orchestrator
 "use strict";
 
+const EXPECTED_PLATFORMS = Object.freeze([
+    "instagram",
+    "facebook",
+    "twitter",
+    "pinterest",
+    "youtube",
+    "tiktok",
+    "generic"
+]);
+
 function createAppController(options = {}) {
     const win = options.window || (typeof window !== "undefined" ? window : globalThis);
     const doc = options.document || (typeof document !== "undefined" ? document : null);
@@ -157,8 +167,22 @@ function createAppController(options = {}) {
             }
             const data = await res.json();
             const caps = data && data.capabilities ? data.capabilities : null;
-            if (!caps || !caps.platforms || typeof caps.platforms !== "object") {
+            if (
+                !caps ||
+                typeof caps !== "object" ||
+                Array.isArray(caps) ||
+                typeof caps.audioOnly !== "boolean" ||
+                !caps.platforms ||
+                typeof caps.platforms !== "object" ||
+                Array.isArray(caps.platforms)
+            ) {
                 throw new Error("Invalid capabilities payload received.");
+            }
+
+            for (const plat of EXPECTED_PLATFORMS) {
+                if (typeof caps.platforms[plat] !== "boolean") {
+                    throw new Error(`Invalid or missing boolean flag for platform: ${plat}`);
+                }
             }
 
             capabilitiesLoaded = true;
@@ -436,8 +460,8 @@ if (typeof document !== "undefined" && document.addEventListener) {
 }
 
 if (typeof module === "object" && module.exports) {
-    module.exports = { createAppController };
+    module.exports = { createAppController, EXPECTED_PLATFORMS };
 } else if (typeof window !== "undefined") {
     window.Reeva = window.Reeva || {};
-    window.Reeva.app = { createAppController };
+    window.Reeva.app = { createAppController, EXPECTED_PLATFORMS };
 }

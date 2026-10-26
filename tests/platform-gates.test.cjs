@@ -20,7 +20,7 @@ const { ValidationError } = require("../lib/url-validator.cjs");
 const { stopDefaultEgressProxy } = require("../lib/extraction/egress-proxy.cjs");
 const { destroyHttpAgents } = require("../lib/http-client.cjs");
 
-const { createAppController } = require("../public/app.js");
+const { createAppController, EXPECTED_PLATFORMS } = require("../public/app.js");
 const stateModule = require("../public/js/state.js");
 const apiModule = require("../public/js/api.js");
 const uiModule = require("../public/js/ui.js");
@@ -888,7 +888,20 @@ test("Frontend Capability Safety: Consent validation, empty URL check, and cance
     };
     const mockFetch = async () => ({
         ok: true,
-        json: async () => ({ capabilities: { platforms: { youtube: true } } })
+        json: async () => ({
+            capabilities: {
+                platforms: {
+                    instagram: false,
+                    facebook: false,
+                    twitter: false,
+                    pinterest: false,
+                    youtube: true,
+                    tiktok: false,
+                    generic: false
+                },
+                audioOnly: false
+            }
+        })
     });
 
     const app1 = createAppController({
@@ -920,6 +933,302 @@ test("Frontend Capability Safety: Consent validation, empty URL check, and cance
     await app2.handleGetMedia();
     assert.strictEqual(fetchCalls, 0, "No request with empty URL");
     assert.match(elEmptyUrl.log.textContent, /Please paste a video link first/i);
+});
+
+test("Frontend Capability Safety: Rejects incomplete capabilities payloads missing platform keys and stays fail-closed", async () => {
+    const validPlatforms = {
+        instagram: true,
+        facebook: true,
+        twitter: true,
+        pinterest: true,
+        youtube: true,
+        tiktok: true,
+        generic: true
+    };
+
+    assert.strictEqual(EXPECTED_PLATFORMS.length, 7);
+
+    // Test missing each of the 7 platforms individually
+    for (const missingPlat of EXPECTED_PLATFORMS) {
+        const platforms = { ...validPlatforms };
+        delete platforms[missingPlat];
+
+        const { doc, elementsById, platformBtns } = createMockDOM();
+        const state = stateModule.createState();
+        let fetchMediaCalls = 0;
+        const mockApi = {
+            ...apiModule,
+            fetchMedia: async () => { fetchMediaCalls++; return { success: true }; }
+        };
+
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({
+                capabilities: {
+                    platforms,
+                    audioOnly: true
+                }
+            })
+        });
+
+        const app = createAppController({
+            document: doc,
+            state,
+            api: mockApi,
+            uiModule,
+            i18n: i18nModule,
+            fetchFn: mockFetch
+        });
+
+        const loaded = await app.capabilitiesPromise;
+        assert.strictEqual(loaded, false, `loadCapabilities must return false when ${missingPlat} is missing`);
+        assert.strictEqual(app.getCapabilitiesLoaded(), false);
+        assert.strictEqual(app.getVerifiedPlatforms(), null);
+        assert.strictEqual(elementsById.get.disabled, true);
+        assert.strictEqual(state.getPlatform(), null);
+        assert.match(elementsById.log.textContent, /Unable to verify available services/);
+
+        platformBtns.forEach((btn) => {
+            assert.strictEqual(btn.disabled, true);
+            assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
+        });
+
+        // Attempting to extract media must fail-closed without network call
+        await app.handleGetMedia();
+        assert.strictEqual(fetchMediaCalls, 0, `Media extraction must not run when ${missingPlat} is missing`);
+    }
+
+    // Test empty platforms object
+    {
+        const { doc, elementsById, platformBtns } = createMockDOM();
+        const state = stateModule.createState();
+        let fetchMediaCalls = 0;
+        const mockApi = {
+            ...apiModule,
+            fetchMedia: async () => { fetchMediaCalls++; return { success: true }; }
+        };
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({
+                capabilities: {
+                    platforms: {},
+                    audioOnly: true
+                }
+            })
+        });
+
+        const app = createAppController({
+            document: doc,
+            state,
+            api: mockApi,
+            uiModule,
+            i18n: i18nModule,
+            fetchFn: mockFetch
+        });
+
+        const loaded = await app.capabilitiesPromise;
+        assert.strictEqual(loaded, false);
+        assert.strictEqual(app.getCapabilitiesLoaded(), false);
+        assert.strictEqual(app.getVerifiedPlatforms(), null);
+        assert.strictEqual(elementsById.get.disabled, true);
+        assert.strictEqual(state.getPlatform(), null);
+
+        platformBtns.forEach((btn) => {
+            assert.strictEqual(btn.disabled, true);
+            assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
+        });
+
+        await app.handleGetMedia();
+        assert.strictEqual(fetchMediaCalls, 0);
+    }
+});
+
+test("Frontend Capability Safety: Rejects non-boolean platform flags (strings, numbers, null) and stays fail-closed", async () => {
+    const invalidValues = [
+        "true",
+        "false",
+        1,
+        0,
+        null,
+        undefined,
+        {},
+        []
+    ];
+
+    for (const invalidVal of invalidValues) {
+        const { doc, elementsById, platformBtns } = createMockDOM();
+        const state = stateModule.createState();
+        let fetchMediaCalls = 0;
+        const mockApi = {
+            ...apiModule,
+            fetchMedia: async () => { fetchMediaCalls++; return { success: true }; }
+        };
+
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({
+                capabilities: {
+                    platforms: {
+                        instagram: true,
+                        facebook: true,
+                        twitter: true,
+                        pinterest: true,
+                        youtube: invalidVal,
+                        tiktok: true,
+                        generic: true
+                    },
+                    audioOnly: true
+                }
+            })
+        });
+
+        const app = createAppController({
+            document: doc,
+            state,
+            api: mockApi,
+            uiModule,
+            i18n: i18nModule,
+            fetchFn: mockFetch
+        });
+
+        const loaded = await app.capabilitiesPromise;
+        assert.strictEqual(loaded, false, `loadCapabilities must return false for non-boolean flag: ${JSON.stringify(invalidVal)}`);
+        assert.strictEqual(app.getCapabilitiesLoaded(), false);
+        assert.strictEqual(app.getVerifiedPlatforms(), null);
+        assert.strictEqual(elementsById.get.disabled, true);
+        assert.strictEqual(state.getPlatform(), null);
+        assert.match(elementsById.log.textContent, /Unable to verify available services/);
+
+        platformBtns.forEach((btn) => {
+            assert.strictEqual(btn.disabled, true);
+            assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
+        });
+
+        await app.handleGetMedia();
+        assert.strictEqual(fetchMediaCalls, 0, `Media extraction must not run with invalid type: ${JSON.stringify(invalidVal)}`);
+    }
+});
+
+test("Frontend Capability Safety: Rejects missing or non-boolean audioOnly flag and stays fail-closed", async () => {
+    const invalidAudioOnlyValues = [
+        undefined,
+        "true",
+        "false",
+        1,
+        0,
+        null,
+        {},
+        []
+    ];
+
+    for (const audioVal of invalidAudioOnlyValues) {
+        const { doc, elementsById, platformBtns } = createMockDOM();
+        const state = stateModule.createState();
+        let fetchMediaCalls = 0;
+        const mockApi = {
+            ...apiModule,
+            fetchMedia: async () => { fetchMediaCalls++; return { success: true }; }
+        };
+
+        const caps = {
+            platforms: {
+                instagram: true,
+                facebook: true,
+                twitter: true,
+                pinterest: true,
+                youtube: true,
+                tiktok: true,
+                generic: true
+            }
+        };
+        if (audioVal !== undefined) {
+            caps.audioOnly = audioVal;
+        }
+
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => ({ capabilities: caps })
+        });
+
+        const app = createAppController({
+            document: doc,
+            state,
+            api: mockApi,
+            uiModule,
+            i18n: i18nModule,
+            fetchFn: mockFetch
+        });
+
+        const loaded = await app.capabilitiesPromise;
+        assert.strictEqual(loaded, false, `loadCapabilities must return false for invalid audioOnly: ${JSON.stringify(audioVal)}`);
+        assert.strictEqual(app.getCapabilitiesLoaded(), false);
+        assert.strictEqual(app.getVerifiedPlatforms(), null);
+        assert.strictEqual(elementsById.get.disabled, true);
+        assert.strictEqual(state.getPlatform(), null);
+        assert.match(elementsById.log.textContent, /Unable to verify available services/);
+
+        platformBtns.forEach((btn) => {
+            assert.strictEqual(btn.disabled, true);
+            assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
+        });
+
+        await app.handleGetMedia();
+        assert.strictEqual(fetchMediaCalls, 0, `Media extraction must not run with invalid audioOnly: ${JSON.stringify(audioVal)}`);
+    }
+});
+
+test("Frontend Capability Safety: Rejects structurally malformed payloads and stays fail-closed", async () => {
+    const malformedPayloads = [
+        null,
+        {},
+        { capabilities: null },
+        { capabilities: "all_available" },
+        { capabilities: [] },
+        { capabilities: { platforms: null, audioOnly: false } },
+        { capabilities: { platforms: "instagram", audioOnly: false } },
+        { capabilities: { platforms: [], audioOnly: false } },
+        { capabilities: { platforms: 123, audioOnly: false } }
+    ];
+
+    for (const payload of malformedPayloads) {
+        const { doc, elementsById, platformBtns } = createMockDOM();
+        const state = stateModule.createState();
+        let fetchMediaCalls = 0;
+        const mockApi = {
+            ...apiModule,
+            fetchMedia: async () => { fetchMediaCalls++; return { success: true }; }
+        };
+
+        const mockFetch = async () => ({
+            ok: true,
+            json: async () => payload
+        });
+
+        const app = createAppController({
+            document: doc,
+            state,
+            api: mockApi,
+            uiModule,
+            i18n: i18nModule,
+            fetchFn: mockFetch
+        });
+
+        const loaded = await app.capabilitiesPromise;
+        assert.strictEqual(loaded, false);
+        assert.strictEqual(app.getCapabilitiesLoaded(), false);
+        assert.strictEqual(app.getVerifiedPlatforms(), null);
+        assert.strictEqual(elementsById.get.disabled, true);
+        assert.strictEqual(state.getPlatform(), null);
+        assert.match(elementsById.log.textContent, /Unable to verify available services/);
+
+        platformBtns.forEach((btn) => {
+            assert.strictEqual(btn.disabled, true);
+            assert.strictEqual(btn.getAttribute("aria-disabled"), "true");
+        });
+
+        await app.handleGetMedia();
+        assert.strictEqual(fetchMediaCalls, 0);
+    }
 });
 
 // =========================================================================
