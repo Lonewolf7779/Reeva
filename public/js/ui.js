@@ -40,6 +40,8 @@
             whyConsent: documentRef.getElementById("why-consent"),
             footerDisclaimer: documentRef.getElementById("footer-disclaimer"),
             footerCopyright: documentRef.getElementById("footer-copyright"),
+            linkPrivacy: documentRef.getElementById("link-privacy"),
+            linkTerms: documentRef.getElementById("link-terms"),
             platformBtns: documentRef.querySelectorAll(".platform-btn")
         };
 
@@ -216,6 +218,8 @@
             // Footer text
             if (elements.footerDisclaimer) elements.footerDisclaimer.textContent = t("footer.disclaimer", {}, lang);
             if (elements.footerCopyright) elements.footerCopyright.textContent = t("footer.copyright", {}, lang);
+            if (elements.linkPrivacy) elements.linkPrivacy.textContent = t("footer.privacy", {}, lang);
+            if (elements.linkTerms) elements.linkTerms.textContent = t("footer.terms", {}, lang);
 
             // Platform buttons
             if (elements.platformBtns) {

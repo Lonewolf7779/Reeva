@@ -1,0 +1,6 @@
+# robots.txt — Reeva Public Media Downloader
+User-agent: *
+Allow: /
+Allow: /privacy.html
+Allow: /terms.html
+Disallow: /api/

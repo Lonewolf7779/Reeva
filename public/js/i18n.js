@@ -51,6 +51,8 @@
             "status.generic_error": "Failed to retrieve media. Please try again.",
             "footer.disclaimer": "Disclaimer: This tool is for personal and educational use only.",
             "footer.copyright": "We never store or host media. All rights belong to their respective owners.",
+            "footer.privacy": "Privacy Policy",
+            "footer.terms": "Terms of Service",
             "aria.video_url": "Video URL",
             "aria.media_preview": "Media preview"
         }),
@@ -85,6 +87,8 @@
             "status.generic_error": "मीडिया प्राप्त करने में विफल। कृपया पुनः प्रयास करें।",
             "footer.disclaimer": "अस्वीकरण: यह उपकरण केवल व्यक्तिगत और शैक्षणिक उपयोग के लिए है।",
             "footer.copyright": "हम कभी भी मीडिया स्टोर या होस्ट नहीं करते हैं। सभी अधिकार उनके संबंधित स्वामियों के हैं।",
+            "footer.privacy": "गोपनीयता नीति",
+            "footer.terms": "सेवा की शर्तें",
             "aria.video_url": "वीडियो लिंक",
             "aria.media_preview": "मीडिया पूर्वावलोकन"
         })
