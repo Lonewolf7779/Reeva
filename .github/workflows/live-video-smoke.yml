@@ -1,0 +1,69 @@
+name: Reeva Live Video Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform adapter to verify
+        required: true
+        type: choice
+        options:
+          - youtube
+          - tiktok
+          - generic
+          - x
+          - pinterest
+          - instagram
+          - facebook
+      video_url:
+        description: Public video URL you are authorized to access
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reeva-live-video-smoke
+  cancel-in-progress: false
+
+jobs:
+  live-video:
+    name: Verify real media download
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out Reeva
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Validate smoke-test script syntax
+        run: node --check scripts/live-video-smoke.cjs
+
+      - name: Require configured live Reeva URL
+        env:
+          REEVA_BASE_URL: ${{ secrets.REEVA_BASE_URL }}
+        run: |
+          if [ -z "$REEVA_BASE_URL" ]; then
+            echo "::error::Add the REEVA_BASE_URL repository or environment secret with the running Reeva base URL."
+            exit 1
+          fi
+          case "$REEVA_BASE_URL" in
+            https://*) ;;
+            *)
+              echo "::error::REEVA_BASE_URL must use HTTPS for live verification."
+              exit 1
+              ;;
+          esac
+
+      - name: Run live end-to-end video download test
+        env:
+          REEVA_BASE_URL: ${{ secrets.REEVA_BASE_URL }}
+          REEVA_TEST_PLATFORM: ${{ inputs.platform }}
+          REEVA_TEST_VIDEO_URL: ${{ inputs.video_url }}
+          REEVA_TEST_MAX_BYTES: 104857600
+        run: node scripts/live-video-smoke.cjs
