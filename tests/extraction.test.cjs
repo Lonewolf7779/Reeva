@@ -1741,6 +1741,84 @@ test("Facebook Integration: Upstream timeout maps to PROVIDER_TIMEOUT", async ()
 
 // ==================== HTML ENTITY DECODING TESTS ====================
 
+test("Facebook Integration: Upstream communication failure rethrows SecurityHTTPError with UPSTREAM_COMMUNICATION_ERROR", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Upstream communication failure.", 502, "UPSTREAM_COMMUNICATION_ERROR");
+    };
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof SecurityHTTPError);
+            assert.equal(err.code, "UPSTREAM_COMMUNICATION_ERROR");
+            assert.equal(err.statusCode, 502);
+            return true;
+        }
+    );
+});
+
+test("Facebook Integration: Client abort rethrows SecurityHTTPError with CLIENT_ABORTED", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Request aborted by client.", 499, "CLIENT_ABORTED");
+    };
+
+    await assert.rejects(
+        () => extractFacebook("https://www.facebook.com/watch/?v=10153231379946729", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof SecurityHTTPError);
+            assert.equal(err.code, "CLIENT_ABORTED");
+            assert.equal(err.statusCode, 499);
+            return true;
+        }
+    );
+});
+
+test("Pinterest Integration: Upstream communication failure rethrows SecurityHTTPError with UPSTREAM_COMMUNICATION_ERROR", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Upstream communication failure.", 502, "UPSTREAM_COMMUNICATION_ERROR");
+    };
+
+    await assert.rejects(
+        () => extractPinterest("https://www.pinterest.com/pin/47358233572860931/", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof SecurityHTTPError);
+            assert.equal(err.code, "UPSTREAM_COMMUNICATION_ERROR");
+            assert.equal(err.statusCode, 502);
+            return true;
+        }
+    );
+});
+
+test("Pinterest Integration: Client abort rethrows SecurityHTTPError with CLIENT_ABORTED", async () => {
+    const { SecurityHTTPError } = require("../lib/http-client.cjs");
+    const { extractPinterest } = require("../lib/extraction/adapters/pinterest.cjs");
+    const mockFetchHtml = async () => {
+        throw new SecurityHTTPError("Request aborted by client.", 499, "CLIENT_ABORTED");
+    };
+
+    await assert.rejects(
+        () => extractPinterest("https://www.pinterest.com/pin/47358233572860931/", {
+            fetchHtml: mockFetchHtml
+        }),
+        (err) => {
+            assert.ok(err instanceof SecurityHTTPError);
+            assert.equal(err.code, "CLIENT_ABORTED");
+            assert.equal(err.statusCode, 499);
+            return true;
+        }
+    );
+});
+
 test("HTML Entity Decoding: decodeUrl decodes &amp;, escaped quotes, and unicode ampersands", () => {
     const input = "https://cdn.example.com/video.mp4?a=1&amp;b=2\\\"&amp;c=\\u0026d";
     const output = decodeUrl(input);
