@@ -5,14 +5,14 @@ const tls = require("tls");
 const dns = require("dns").promises;
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
 const { extractInstagram } = require("../lib/extraction/adapters/instagram.cjs");
 const { extractFacebook } = require("../lib/extraction/adapters/facebook.cjs");
 const { extractTikTok } = require("../lib/extraction/adapters/tiktok.cjs");
 const { secureFetch } = require("../lib/http-client.cjs");
 const { SUPPORTED_MEDIA_DOMAINS } = require("../lib/url-validator.cjs");
-const { REEVA_TEMP_DIR, resolveFfmpegPath } = require("../lib/extraction/adapters/youtube.cjs");
+const { REEVA_TEMP_DIR, resolveFfmpegPath, resolveYtDlpCommand } = require("../lib/extraction/adapters/youtube.cjs");
 
 const DEFAULT_TARGETS = [
     {
@@ -34,6 +34,44 @@ const DEFAULT_TARGETS = [
         extractor: extractTikTok
     }
 ];
+
+/**
+ * Checks system environment dependencies and pre-flight prerequisites.
+ *
+ * @returns {object}
+ */
+function checkEnvironment() {
+    const envReport = {
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch,
+        opensslVersion: process.versions.openssl,
+        ffmpeg: { available: false, version: "N/A", path: "N/A" },
+        ytdlp: { available: false, version: "N/A", command: "N/A" },
+        proxyConfigured: Boolean(process.env.REEVA_EGRESS_PROXY_URL || process.env.HTTP_PROXY || process.env.HTTPS_PROXY)
+    };
+
+    try {
+        const ffmpegCmd = resolveFfmpegPath();
+        envReport.ffmpeg.path = ffmpegCmd;
+        const ffmpegOutput = execSync(`"${ffmpegCmd}" -version`, { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+        const firstLine = ffmpegOutput.split("\n")[0];
+        envReport.ffmpeg.available = true;
+        envReport.ffmpeg.version = firstLine.trim();
+    } catch (_) {}
+
+    try {
+        const ytdlpInfo = resolveYtDlpCommand();
+        const cmd = ytdlpInfo.command;
+        const args = [...(ytdlpInfo.baseArgs || []), "--version"];
+        envReport.ytdlp.command = `${cmd} ${(ytdlpInfo.baseArgs || []).join(" ")}`.trim();
+        const ytdlpOutput = execSync(`"${cmd}" ${args.join(" ")}`, { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).toString("utf8");
+        envReport.ytdlp.available = true;
+        envReport.ytdlp.version = ytdlpOutput.trim();
+    } catch (_) {}
+
+    return envReport;
+}
 
 /**
  * Sniffs container magic bytes for supported video formats.
@@ -169,14 +207,17 @@ async function checkNetworkLayer(host) {
  * Runs full pipeline verification for a single target platform.
  *
  * @param {object} target
+ * @param {boolean} [silent=false]
  * @returns {Promise<object>}
  */
-async function verifyTarget(target) {
-    console.log(`\n======================================================`);
-    console.log(`VERIFYING TARGET: [${target.platform.toUpperCase()}]`);
-    console.log(`URL: ${target.url}`);
-    console.log(`Host: ${target.host}`);
-    console.log(`======================================================`);
+async function verifyTarget(target, silent = false) {
+    if (!silent) {
+        console.log(`\n======================================================`);
+        console.log(`VERIFYING TARGET: [${target.platform.toUpperCase()}]`);
+        console.log(`URL: ${target.url}`);
+        console.log(`Host: ${target.host}`);
+        console.log(`======================================================`);
+    }
 
     const result = {
         platform: target.platform,
@@ -192,13 +233,15 @@ async function verifyTarget(target) {
 
     // 1. Network Diagnostics
     result.network = await checkNetworkLayer(target.host);
-    console.log(`1. Network Diagnostic:`);
-    console.log(`   - DNS: ${result.network.dnsOk ? "OK (" + result.network.ipAddresses.join(", ") + ")" : "FAILED"}`);
-    console.log(`   - TLS Verified: ${result.network.tlsOk ? "YES" : "NO"} (Authorized: ${result.network.authorized})`);
-    console.log(`   - Issuer: ${result.network.issuer}`);
+    if (!silent) {
+        console.log(`1. Network Diagnostic:`);
+        console.log(`   - DNS: ${result.network.dnsOk ? "OK (" + result.network.ipAddresses.join(", ") + ")" : "FAILED"}`);
+        console.log(`   - TLS Verified: ${result.network.tlsOk ? "YES" : "NO"} (Authorized: ${result.network.authorized})`);
+        console.log(`   - Issuer: ${result.network.issuer}`);
+    }
 
     if (!result.network.tlsOk) {
-        console.log(`   - Network Error: ${result.network.error}`);
+        if (!silent) console.log(`   - Network Error: ${result.network.error}`);
         if (result.network.issuer.includes("Sophos") || (result.network.error && result.network.error.includes("UNABLE_TO_VERIFY_LEAF_SIGNATURE"))) {
             result.blockerCategory = "LOCAL_MIDDLEBOX_TLS_INTERCEPTION";
             result.blockerDetail = `Firewall middlebox (${result.network.issuer}) intercepted TLS and re-signed leaf certificate.`;
@@ -212,14 +255,16 @@ async function verifyTarget(target) {
     }
 
     // 2. Extraction Adapter Execution
-    console.log(`\n2. Extraction Adapter:`);
+    if (!silent) console.log(`\n2. Extraction Adapter:`);
     try {
         const extracted = await target.extractor(target.url);
         result.extraction.success = true;
         result.extraction.data = extracted;
-        console.log(`   - SUCCESS: Extracted media URL (${extracted.url ? extracted.url.substring(0, 80) + "..." : "N/A"})`);
-        console.log(`   - Title: ${extracted.title || "N/A"}`);
-        console.log(`   - Type: ${extracted.type || "N/A"}`);
+        if (!silent) {
+            console.log(`   - SUCCESS: Extracted media URL (${extracted.url ? extracted.url.substring(0, 80) + "..." : "N/A"})`);
+            console.log(`   - Title: ${extracted.title || "N/A"}`);
+            console.log(`   - Type: ${extracted.type || "N/A"}`);
+        }
     } catch (err) {
         result.extraction.success = false;
         result.extraction.error = {
@@ -227,7 +272,7 @@ async function verifyTarget(target) {
             message: err.message,
             statusCode: err.statusCode || 500
         };
-        console.log(`   - FAILED: [${result.extraction.error.code}] ${result.extraction.error.message}`);
+        if (!silent) console.log(`   - FAILED: [${result.extraction.error.code}] ${result.extraction.error.message}`);
 
         if (!result.blockerCategory || result.blockerCategory === "UNKNOWN") {
             if (result.extraction.error.code === "PLATFORM_CHALLENGE") {
@@ -252,7 +297,7 @@ async function verifyTarget(target) {
     let tempDownloadPath = null;
 
     if (!targetFilePath && mediaUrl) {
-        console.log(`\n3. Media Stream Download:`);
+        if (!silent) console.log(`\n3. Media Stream Download:`);
         try {
             if (!fs.existsSync(REEVA_TEMP_DIR)) {
                 fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
@@ -286,12 +331,14 @@ async function verifyTarget(target) {
             });
 
             targetFilePath = tempDownloadPath;
-            console.log(`   - SUCCESS: Downloaded ${result.stream.bytes} bytes`);
-            console.log(`   - Content-Type: ${result.stream.contentType}`);
+            if (!silent) {
+                console.log(`   - SUCCESS: Downloaded ${result.stream.bytes} bytes`);
+                console.log(`   - Content-Type: ${result.stream.contentType}`);
+            }
         } catch (err) {
             result.stream.success = false;
             result.stream.error = err.message;
-            console.log(`   - FAILED to stream media: ${err.message}`);
+            if (!silent) console.log(`   - FAILED to stream media: ${err.message}`);
             result.blockerCategory = "MEDIA_STREAM_FAILURE";
             result.blockerDetail = err.message;
             return result;
@@ -300,7 +347,7 @@ async function verifyTarget(target) {
 
     // 4. Media Validation (Container Sniffing & FFmpeg Decode)
     if (targetFilePath && fs.existsSync(targetFilePath)) {
-        console.log(`\n4. Media Validation:`);
+        if (!silent) console.log(`\n4. Media Validation:`);
         try {
             const fd = fs.openSync(targetFilePath, "r");
             const headerBuf = Buffer.alloc(32);
@@ -309,12 +356,12 @@ async function verifyTarget(target) {
 
             const container = sniffContainerFormat(headerBuf);
             result.mediaValidation.container = container;
-            console.log(`   - Container Magic Bytes: ${container || "UNRECOGNIZED"}`);
+            if (!silent) console.log(`   - Container Magic Bytes: ${container || "UNRECOGNIZED"}`);
 
             const ffmpegResult = await verifyFfmpegDecode(targetFilePath);
             result.mediaValidation.ffmpegValid = ffmpegResult.valid;
             result.mediaValidation.errors = ffmpegResult.errors;
-            console.log(`   - FFmpeg Decode: ${ffmpegResult.valid ? "VALID (0 errors)" : "INVALID (" + ffmpegResult.errors.length + " errors)"}`);
+            if (!silent) console.log(`   - FFmpeg Decode: ${ffmpegResult.valid ? "VALID (0 errors)" : "INVALID (" + ffmpegResult.errors.length + " errors)"}`);
 
             if (ffmpegResult.valid) {
                 result.overallStatus = "PASSED";
@@ -341,36 +388,83 @@ async function verifyTarget(target) {
  * Main runner.
  */
 async function main() {
-    console.log("==================================================================");
-    console.log("REEVA STAGING & RECOVERY PLATFORM VERIFICATION HARNESS");
-    console.log("Preserving TLS verification, SSRF protections, and strict bounds");
-    console.log("==================================================================");
+    const args = process.argv.slice(2);
+    const isJson = args.includes("--json");
+    let platformArg = null;
+    let customUrl = null;
 
-    const platformArg = process.argv[2];
-    const targets = platformArg
-        ? DEFAULT_TARGETS.filter((t) => t.platform === platformArg.toLowerCase())
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--platform" && args[i + 1]) {
+            platformArg = args[i + 1].toLowerCase();
+            i++;
+        } else if (args[i] === "--url" && args[i + 1]) {
+            customUrl = args[i + 1];
+            i++;
+        } else if (!args[i].startsWith("--") && !platformArg) {
+            platformArg = args[i].toLowerCase();
+        }
+    }
+
+    if (platformArg === "all") {
+        platformArg = null;
+    }
+
+    const envInfo = checkEnvironment();
+
+    if (!isJson) {
+        console.log("==================================================================");
+        console.log("REEVA STAGING & RECOVERY PLATFORM VERIFICATION HARNESS");
+        console.log("Preserving TLS verification, SSRF protections, and strict bounds");
+        console.log("==================================================================");
+        console.log("Runtime Environment:");
+        console.log(`- Node.js: ${envInfo.nodeVersion} (${envInfo.platform} ${envInfo.arch})`);
+        console.log(`- OpenSSL: ${envInfo.opensslVersion}`);
+        console.log(`- FFmpeg:  ${envInfo.ffmpeg.available ? envInfo.ffmpeg.version : "NOT AVAILABLE"}`);
+        console.log(`- yt-dlp:  ${envInfo.ytdlp.available ? envInfo.ytdlp.version : "NOT AVAILABLE"}`);
+        console.log(`- Egress Proxy Configured: ${envInfo.proxyConfigured}`);
+    }
+
+    let targets = platformArg
+        ? DEFAULT_TARGETS.filter((t) => t.platform === platformArg)
         : DEFAULT_TARGETS;
 
     if (targets.length === 0) {
-        console.error(`Unknown platform '${platformArg}'. Available: instagram, facebook, tiktok`);
+        console.error(`Unknown platform '${platformArg}'. Available: instagram, facebook, tiktok, all`);
         process.exit(1);
     }
 
-    const summaryTable = [];
-    for (const target of targets) {
-        const res = await verifyTarget(target);
-        summaryTable.push({
-            Platform: res.platform,
-            DNS: res.network ? (res.network.dnsOk ? "OK" : "FAIL") : "N/A",
-            TLS: res.network ? (res.network.tlsOk ? "VERIFIED" : "BLOCKED") : "N/A",
-            Extraction: res.extraction.success ? "SUCCESS" : "FAIL",
-            MediaBytes: res.stream.bytes || (res.extraction.data && res.extraction.data.localFilePath ? "LOCAL" : 0),
-            FFmpegDecode: res.mediaValidation.ffmpegValid ? "VALID" : "N/A",
-            Overall: res.overallStatus,
-            BlockerCategory: res.blockerCategory,
-            BlockerDetail: res.blockerDetail ? res.blockerDetail.substring(0, 60) : "None"
-        });
+    if (customUrl && targets.length === 1) {
+        targets = [{
+            ...targets[0],
+            url: customUrl
+        }];
     }
+
+    const summaryResults = [];
+    for (const target of targets) {
+        const res = await verifyTarget(target, isJson);
+        summaryResults.push(res);
+    }
+
+    if (isJson) {
+        console.log(JSON.stringify({
+            environment: envInfo,
+            results: summaryResults
+        }, null, 2));
+        return;
+    }
+
+    const summaryTable = summaryResults.map((res) => ({
+        Platform: res.platform,
+        DNS: res.network ? (res.network.dnsOk ? "OK" : "FAIL") : "N/A",
+        TLS: res.network ? (res.network.tlsOk ? "VERIFIED" : "BLOCKED") : "N/A",
+        Extraction: res.extraction.success ? "SUCCESS" : "FAIL",
+        MediaBytes: res.stream.bytes || (res.extraction.data && res.extraction.data.localFilePath ? "LOCAL" : 0),
+        FFmpegDecode: res.mediaValidation.ffmpegValid ? "VALID" : "N/A",
+        Overall: res.overallStatus,
+        BlockerCategory: res.blockerCategory,
+        BlockerDetail: res.blockerDetail ? res.blockerDetail.substring(0, 50) : "None"
+    }));
 
     console.log("\n==================================================================");
     console.log("STAGING VERIFICATION SUMMARY TABLE");
@@ -386,6 +480,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+    checkEnvironment,
     checkNetworkLayer,
     verifyTarget,
     sniffContainerFormat,

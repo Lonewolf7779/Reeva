@@ -98,17 +98,23 @@ This investigation explores the feasibility of **Creator-Authorized Personal Bac
 
 ---
 
-## 3. Capability Matrix Summary
+## 3. Four-Tier Capability & Access Matrix
 
-| Platform | Official API Product | Supported Account Types | Raw MP4 Binary Available? | Licensed Audio Supported? | App Review Required? | Feasibility in Reeva |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **YouTube** | YouTube Data API v3 / Direct | All public accounts | Yes (via local pipeline) | Yes | No (Local dev) | **WORKING (Baseline)** |
-| **Twitter / X** | Syndication API / CDN | All public tweets | Yes (MP4 video tracks) | Yes | No | **WORKING (Baseline)** |
-| **Pinterest** | OpenGraph / Media CDN | Public pins | Yes (MP4 video tracks) | Yes | No | **WORKING (Baseline)** |
-| **Generic** | Standard HTTP/HTTPS | Public open media | Yes (WebM, MP4) | Yes | No | **WORKING (Baseline)** |
-| **TikTok** | Display API v2 | Personal & Creator | **NO** (Embeds only) | N/A | Yes | **EMBED ONLY** |
-| **Instagram** | Instagram Graph API | Professional Only | **CONDITIONAL** (Owned content) | **NO** (Omitted if music used) | Yes (Mandatory) | **RESTRICTED** |
-| **Facebook** | Meta Graph API v21 | Page Admins Only | **CONDITIONAL** (Admin owned) | Partial | Yes (Mandatory) | **RESTRICTED** |
+Platforms are evaluated across four distinct content access tiers:
+* **Category A:** Public content accessible without authentication.
+* **Category B:** Creator-owned content accessible through officially authorized APIs.
+* **Category C:** Content requiring authentication or additional permissions.
+* **Category D:** Content that cannot currently be retrieved through a documented, permitted method.
+
+| Platform | Category A: Public Content (Unauthenticated) | Category B: Creator-Owned Content (Authorized APIs) | Category C: Authenticated / Permissioned Content | Category D: Undocumented / Prohibited Content | Reeva Support Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **YouTube** | **DOWNLOADABLE** (Direct extraction & streaming via clean local pipeline) | **DOWNLOADABLE** (YouTube Data API v3 / OAuth for channel owners) | Private / Unlisted videos (Requires channel owner OAuth) | DRM / Widevine protected streams | **WORKING (Baseline)** |
+| **Twitter / X** | **DOWNLOADABLE** (Syndication endpoints & public mp4 CDN tracks) | **DOWNLOADABLE** (X API v2 with OAuth 2.0 user context) | Protected / Followers-only tweets | Deleted / DMCA-takedown tweets | **WORKING (Baseline)** |
+| **Pinterest** | **DOWNLOADABLE** (OpenGraph meta tags & public video CDN streams) | **DOWNLOADABLE** (Pinterest Business API pins endpoint) | Secret / Invite-only group boards | Deleted / Account-restricted pins | **WORKING (Baseline)** |
+| **Generic** | **DOWNLOADABLE** (Direct HTTP/HTTPS stream validation & FFmpeg decode) | N/A (Standard web server endpoints) | HTTP Basic / Bearer token gated endpoints | Encrypted / DRM-protected media | **WORKING (Baseline)** |
+| **TikTok** | **RESTRICTED** (yt-dlp public web extractor, subject to anti-bot WAF & regional blocks) | **EMBED ONLY** (Display API v2 returns metadata & embed iframe; raw MP4 omitted) | Friends-only / Private videos | Bulk scraping & offline archiving prohibited by Terms §5.1; Indian regional block (IT Act §69A) | **EMBED FALLBACK ACTIVE** |
+| **Instagram** | **RESTRICTED** (OpenGraph meta & embedded JSON, subject to login walls & IP limits) | **DOWNLOADABLE** (Instagram Graph API `media_url` for Professional accounts without library audio) | Private accounts, Stories, Close Friends | Third-party private content; Reels with licensed music library audio | **EMBED FALLBACK ACTIVE** |
+| **Facebook** | **RESTRICTED** (OpenGraph & Relay JSON for public Watch/Reels, subject to login walls) | **DOWNLOADABLE** (Meta Graph API `source` field for Page Admins) | Private timeline posts, closed Facebook Groups | Third-party private content without administrative consent | **EMBED FALLBACK ACTIVE** |
 
 ---
 

@@ -76,19 +76,25 @@ async function checkHost(host) {
 Reeva includes a dedicated verification harness in `scripts/verify-staging-platforms.cjs` that executes full-pipeline testing with strict certificate verification:
 
 ```bash
-# Verify all remaining platforms (Instagram, Facebook, TikTok)
+# Verify all remaining platforms (Instagram, Facebook, TikTok) with formatted console table
 node scripts/verify-staging-platforms.cjs
 
 # Verify a single platform
 node scripts/verify-staging-platforms.cjs instagram
 node scripts/verify-staging-platforms.cjs facebook
 node scripts/verify-staging-platforms.cjs tiktok
+
+# Verify a specific custom staging URL
+node scripts/verify-staging-platforms.cjs instagram --url "https://www.instagram.com/p/C_sampleShortcode/"
+
+# Output machine-readable JSON for CI/CD staging automation pipelines
+node scripts/verify-staging-platforms.cjs --json
 ```
 
-The harness automatically distinguishes:
-1. **Network Diagnostics:** DNS resolution, TCP port 443 connectivity, strict TLS handshake (`rejectUnauthorized: true`), peer certificate verification.
-2. **Adapter Extraction:** OpenGraph parsing, JSON state traversal, yt-dlp child process isolation.
-3. **Media Streaming:** Secure HTTP stream retrieval into temporary storage.
+The harness automatically checks environment prerequisites (Node >= 20, OpenSSL, FFmpeg, yt-dlp) and distinguishes:
+1. **Network Diagnostics:** DNS resolution, TCP port 443 connectivity, strict TLS handshake (`rejectUnauthorized: true`), peer certificate verification, and middlebox inspection identification.
+2. **Adapter Extraction:** OpenGraph parsing, JSON state traversal, mobile web scraping, and yt-dlp child process isolation.
+3. **Media Streaming:** Secure HTTP stream retrieval into temporary storage enforcing media CDN allowlists.
 4. **Media Validation:** Magic byte sniffing (MP4 `ftyp`, WebM EBML) and FFmpeg null-mux decode (`ffmpeg -v error -i ... -f null -`).
 
 ---
