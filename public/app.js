@@ -115,8 +115,27 @@ function createAppController(options = {}) {
                 if (!targetPlatform || verifiedPlatforms[targetPlatform] !== true) {
                     return;
                 }
+                const previousPlatform = state.getPlatform();
                 if (!state.setPlatform(targetPlatform)) {
                     return;
+                }
+
+                // If platform changed, reset stale previews, embeds, and download buttons
+                if (previousPlatform !== targetPlatform) {
+                    if (isRequestInProgress && activeAbortController) {
+                        try {
+                            activeAbortController.abort();
+                        } catch (_) {}
+                        isRequestInProgress = false;
+                        ui.setLoading(false);
+                    }
+                    state.clearMediaUrls();
+                    state.setStatus("idle");
+                    ui.hidePreview();
+                    if (typeof ui.hideEmbed === "function") {
+                        ui.hideEmbed();
+                    }
+                    ui.setDownloadButtonVisible(false);
                 }
 
                 ui.setActivePlatform(targetPlatform);

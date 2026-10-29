@@ -71,7 +71,29 @@ async function checkHost(host) {
 
 ---
 
-## 3. Repeatable Platform Verification Tests
+## 3. Automated Staging Verification Harness
+
+Reeva includes a dedicated verification harness in `scripts/verify-staging-platforms.cjs` that executes full-pipeline testing with strict certificate verification:
+
+```bash
+# Verify all remaining platforms (Instagram, Facebook, TikTok)
+node scripts/verify-staging-platforms.cjs
+
+# Verify a single platform
+node scripts/verify-staging-platforms.cjs instagram
+node scripts/verify-staging-platforms.cjs facebook
+node scripts/verify-staging-platforms.cjs tiktok
+```
+
+The harness automatically distinguishes:
+1. **Network Diagnostics:** DNS resolution, TCP port 443 connectivity, strict TLS handshake (`rejectUnauthorized: true`), peer certificate verification.
+2. **Adapter Extraction:** OpenGraph parsing, JSON state traversal, yt-dlp child process isolation.
+3. **Media Streaming:** Secure HTTP stream retrieval into temporary storage.
+4. **Media Validation:** Magic byte sniffing (MP4 `ftyp`, WebM EBML) and FFmpeg null-mux decode (`ffmpeg -v error -i ... -f null -`).
+
+---
+
+## 4. Manual Platform Verification Commands
 
 ### A. Instagram Extraction Verification
 Execute against a staging server running with unintercepted egress:

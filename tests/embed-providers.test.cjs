@@ -442,3 +442,131 @@ test("Frontend Embed UI: showEmbed safely constructs sandboxed DOM iframe and hi
     assert.equal(ui.elements.embedContainer.style.display, "none");
     assert.equal(ui.elements.embedContainer.children.length, 0);
 });
+
+test("Frontend Reliability: Platform switching cleans up active embeds, previews, and download triggers", async () => {
+    const { createAppController } = require("../public/app.js");
+    const stateModule = require("../public/js/state.js");
+    const apiModule = require("../public/js/api.js");
+    const uiModule = require("../public/js/ui.js");
+    const i18nModule = require("../public/js/i18n.js");
+
+    // Build mock DOM elements
+    const elements = {};
+    const platformButtons = [];
+    const eventListeners = new Map();
+
+    function makeMockElement(id, tag = "div") {
+        const el = {
+            id,
+            tag,
+            style: { display: "" },
+            attributes: {},
+            classList: {
+                classes: new Set(["hidden"]),
+                add(c) { this.classes.add(c); },
+                remove(c) { this.classes.delete(c); },
+                contains(c) { return this.classes.has(c); }
+            },
+            children: [],
+            textContent: "",
+            value: "",
+            disabled: false,
+            setAttribute(k, v) { this.attributes[k] = String(v); },
+            getAttribute(k) { return this.attributes[k]; },
+            removeAttribute(k) { delete this.attributes[k]; },
+            appendChild(c) { this.children.push(c); },
+            addEventListener(ev, fn) {
+                if (!eventListeners.has(id + ":" + ev)) eventListeners.set(id + ":" + ev, []);
+                eventListeners.get(id + ":" + ev).push(fn);
+            },
+            click() {
+                const list = eventListeners.get(id + ":click") || [];
+                for (const fn of list) fn();
+            }
+        };
+        elements[id] = el;
+        return el;
+    }
+
+    const preview = makeMockElement("preview", "video");
+    const embedContainer = makeMockElement("embed-container", "div");
+    const downloadBtn = makeMockElement("download", "button");
+    const getBtn = makeMockElement("get", "button");
+    const log = makeMockElement("log", "div");
+    const urlIn = makeMockElement("url", "input");
+    const consent = makeMockElement("consent", "input");
+    consent.checked = true;
+
+    ["youtube", "tiktok", "instagram"].forEach(plat => {
+        const btn = makeMockElement("btn-" + plat, "button");
+        btn.dataset = { platform: plat };
+        platformButtons.push(btn);
+    });
+
+    const mockDocument = {
+        getElementById: (id) => elements[id] || null,
+        querySelectorAll: (sel) => {
+            if (sel === ".platform-btn") return platformButtons;
+            return [];
+        },
+        createElement: (tag) => makeMockElement("elem-" + Math.random(), tag),
+        createTextNode: (t) => ({ text: t })
+    };
+
+    const state = stateModule.createState();
+
+    const app = createAppController({
+        document: mockDocument,
+        state,
+        api: apiModule,
+        uiModule,
+        i18n: i18nModule,
+        fetchFn: async (url) => {
+            if (url === "/api/capabilities") {
+                return {
+                    ok: true,
+                    json: async () => ({
+                        capabilities: {
+                            platforms: { youtube: true, tiktok: true, instagram: true, facebook: true, twitter: true, pinterest: true, generic: true },
+                            embedPlatforms: ["tiktok", "instagram", "facebook"],
+                            audioOnly: true
+                        }
+                    })
+                };
+            }
+            return { ok: false, status: 404 };
+        }
+    });
+
+    await app.capabilitiesPromise;
+
+    // Simulate an active embed state on TikTok
+    state.setPlatform("tiktok");
+    state.setStatus("success");
+    state.setMediaUrls({ streamUrl: "/api/media/test", downloadUrl: "/api/media/test" });
+    embedContainer.style.display = "flex";
+    embedContainer.classList.remove("hidden");
+    downloadBtn.style.display = "inline-block";
+    downloadBtn.classList.remove("hidden");
+
+    assert.equal(embedContainer.style.display, "flex");
+    assert.equal(downloadBtn.style.display, "inline-block");
+
+    // Click on YouTube platform button to switch
+    const youtubeBtn = elements["btn-youtube"];
+    youtubeBtn.click();
+
+    // Verify platform changed
+    assert.equal(state.getPlatform(), "youtube");
+
+    // Verify media URLs were cleared
+    assert.equal(state.getStreamUrl(), "");
+    assert.equal(state.getDownloadUrl(), "");
+    assert.equal(state.getStatus(), "idle");
+
+    // Verify embed container and download button were hidden
+    assert.equal(embedContainer.style.display, "none");
+    assert.equal(embedContainer.classList.contains("hidden"), true);
+    assert.equal(downloadBtn.style.display, "none");
+    assert.equal(downloadBtn.classList.contains("hidden"), true);
+});
