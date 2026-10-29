@@ -40,6 +40,7 @@ function createAppController(options = {}) {
     // Availability and capability state tracking
     let capabilitiesLoaded = false;
     let verifiedPlatforms = null;
+    let verifiedEmbedPlatforms = ["tiktok", "instagram", "facebook"];
 
     // Platform selection must be prevented before capabilities load.
     // Clear initial state platform and disable submission and platform buttons pending verification.
@@ -187,6 +188,9 @@ function createAppController(options = {}) {
 
             capabilitiesLoaded = true;
             verifiedPlatforms = caps.platforms;
+            if (Array.isArray(caps.embedPlatforms)) {
+                verifiedEmbedPlatforms = caps.embedPlatforms;
+            }
 
             let firstAvailable = null;
             if (elements.platformBtns) {
@@ -335,6 +339,9 @@ function createAppController(options = {}) {
         state.clearMediaUrls();
         ui.setLoading(true, t("status.fetching", {}, currentLang));
         ui.hidePreview();
+        if (typeof ui.hideEmbed === "function") {
+            ui.hideEmbed();
+        }
         ui.setDownloadButtonVisible(false);
 
         try {
@@ -357,6 +364,34 @@ function createAppController(options = {}) {
             const renderLang = state.getLanguage();
 
             if (!result.success) {
+                // If the active platform is in verifiedEmbedPlatforms, attempt official embed resolution fallback
+                if (verifiedEmbedPlatforms.includes(activePlatform) && typeof api.fetchEmbed === "function") {
+                    try {
+                        const embedResult = await api.fetchEmbed(activePlatform, rawUrl, {
+                            signal: activeAbortController.signal,
+                            fetchFn
+                        });
+
+                        if (!state.isCurrentRequest(requestId)) {
+                            return;
+                        }
+
+                        if (embedResult.code === "ABORTED") {
+                            return;
+                        }
+
+                        if (embedResult.success && embedResult.embed && typeof ui.showEmbed === "function") {
+                            state.setStatus("success");
+                            state.clearMediaUrls();
+                            ui.hidePreview();
+                            ui.setDownloadButtonVisible(false);
+                            ui.showEmbed(embedResult.embed);
+                            ui.setLog(t("status.embed_success", {}, renderLang), "info");
+                            return;
+                        }
+                    } catch (_) {}
+                }
+
                 state.setStatus("error");
                 const errorMessage = result.code === "NETWORK_ERROR"
                     ? t("status.network_error", { message: result.message }, renderLang)
@@ -385,6 +420,9 @@ function createAppController(options = {}) {
                 downloadUrl: result.downloadUrl
             });
 
+            if (typeof ui.hideEmbed === "function") {
+                ui.hideEmbed();
+            }
             ui.setLog(t("status.success", {}, renderLang), "success");
             ui.showPreview(result.streamUrl);
             ui.setDownloadButtonVisible(true);

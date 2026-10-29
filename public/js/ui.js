@@ -35,6 +35,7 @@
             urlIn: documentRef.getElementById("url"),
             log: documentRef.getElementById("log"),
             preview: documentRef.getElementById("preview"),
+            embedContainer: documentRef.getElementById("embed-container"),
             consent: documentRef.getElementById("consent"),
             consentText: documentRef.getElementById("consent-text"),
             whyConsent: documentRef.getElementById("why-consent"),
@@ -117,6 +118,68 @@
             elements.preview.removeAttribute("src");
             elements.preview.classList.add("hidden");
             elements.preview.style.display = "none";
+        }
+
+        /**
+         * Renders the official embedded player in the embed container with restrictive sandbox attributes.
+         *
+         * @param {object} embedData
+         */
+        function showEmbed(embedData) {
+            if (!elements.embedContainer || !embedData || !embedData.embedUrl) return;
+
+            // Clean previous children
+            while (elements.embedContainer.firstChild) {
+                elements.embedContainer.removeChild(elements.embedContainer.firstChild);
+            }
+
+            // Ensure native preview is hidden
+            hidePreview();
+            setDownloadButtonVisible(false);
+
+            // Construct notice badge using textContent and DOM APIs
+            const badge = documentRef.createElement("div");
+            badge.className = "embed-badge";
+
+            const tag = documentRef.createElement("span");
+            tag.className = "embed-badge-tag";
+            tag.textContent = "OFFICIAL EMBED";
+            badge.appendChild(tag);
+
+            const noticeText = documentRef.createTextNode(
+                embedData.notice || "Direct video file downloads are restricted by platform terms. An official embedded player is provided."
+            );
+            badge.appendChild(noticeText);
+            elements.embedContainer.appendChild(badge);
+
+            // Construct sandboxed iframe
+            const iframe = documentRef.createElement("iframe");
+            iframe.setAttribute("src", embedData.embedUrl);
+            iframe.setAttribute("title", embedData.title || "Embedded Media Player");
+            iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups");
+            iframe.setAttribute("allow", "fullscreen; picture-in-picture; autoplay; encrypted-media; web-share");
+            iframe.setAttribute("loading", "lazy");
+
+            const widthVal = embedData.width ? (typeof embedData.width === "number" ? `${embedData.width}px` : embedData.width) : "100%";
+            const heightVal = embedData.height ? (typeof embedData.height === "number" ? `${embedData.height}px` : embedData.height) : "480px";
+            iframe.style.width = widthVal;
+            iframe.style.height = heightVal;
+
+            elements.embedContainer.appendChild(iframe);
+            elements.embedContainer.classList.remove("hidden");
+            elements.embedContainer.style.display = "flex";
+        }
+
+        /**
+         * Hides and resets the official embedded player.
+         */
+        function hideEmbed() {
+            if (!elements.embedContainer) return;
+            while (elements.embedContainer.firstChild) {
+                elements.embedContainer.removeChild(elements.embedContainer.firstChild);
+            }
+            elements.embedContainer.classList.add("hidden");
+            elements.embedContainer.style.display = "none";
         }
 
         /**
@@ -244,6 +307,8 @@
             setLoading,
             showPreview,
             hidePreview,
+            showEmbed,
+            hideEmbed,
             setDownloadButtonVisible,
             setActivePlatform,
             getUrlInput,

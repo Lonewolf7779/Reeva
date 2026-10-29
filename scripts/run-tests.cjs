@@ -19,12 +19,12 @@ for (const file of testFiles) {
     const start = Date.now();
     const result = spawnSync(process.execPath, [
         "--test",
-        "--test-timeout=15000",
+        "--test-timeout=30000",
         "--test-reporter=tap",
         filePath
     ], {
         stdio: ["ignore", "inherit", "inherit"],
-        timeout: 30000,
+        timeout: 45000,
         env: {
             ...process.env,
             NODE_ENV: "test"

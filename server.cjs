@@ -31,6 +31,7 @@ const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
 const { EXTRACTION_ERROR_CODES, DEFAULT_ERROR_MESSAGES } = require("./lib/extraction/types.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
 const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
+const { resolveEmbed, EmbedError, SUPPORTED_EMBED_PLATFORMS } = require("./lib/embed/index.cjs");
 
 // Clean stale temporary media artifacts on server startup
 cleanStaleTempFiles().catch((err) => {
@@ -78,6 +79,7 @@ app.use(helmet({
             styleSrc: ["'self'"],
             imgSrc: ["'self'", "data:", "blob:"],
             mediaSrc: ["'self'", "blob:"],
+            frameSrc: ["'self'", "https://www.tiktok.com", "https://www.instagram.com", "https://www.facebook.com"],
             connectSrc: ["'self'"],
             frameAncestors: ["'none'"],
             objectSrc: ["'none'"],
@@ -1066,6 +1068,48 @@ app.get("/api/proxy", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (
     });
 });
 
+// ================== OFFICIAL EMBED ENDPOINT ==================
+app.get("/api/embed/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
+    try {
+        const embedResult = await resolveEmbed(req.params.platform, req.query.url);
+        return res.json({
+            embed: embedResult,
+            requestId: req.id
+        });
+    } catch (err) {
+        const statusCode = err.statusCode || (err instanceof EmbedError ? err.statusCode : 500);
+        const errorCode = err.code || "EMBED_ERROR";
+        const message = err.message || "Failed to resolve official embed.";
+
+        logger.error({
+            requestId: req.id,
+            platform: req.params.platform,
+            operation: "embed",
+            status: "error",
+            code: errorCode,
+            message
+        });
+
+        return res.status(statusCode).json({
+            error: {
+                code: errorCode,
+                message
+            },
+            requestId: req.id
+        });
+    }
+});
+
 // ================== PUBLIC CAPABILITIES ENDPOINT ==================
 app.get("/api/capabilities", (req, res) => {
     res.json({
@@ -1079,6 +1123,7 @@ app.get("/api/capabilities", (req, res) => {
                 tiktok: Boolean(serverConfig.features.tiktok),
                 generic: Boolean(serverConfig.features.generic)
             },
+            embedPlatforms: SUPPORTED_EMBED_PLATFORMS,
             audioOnly: Boolean(serverConfig.features.audioOnly)
         }
     });
