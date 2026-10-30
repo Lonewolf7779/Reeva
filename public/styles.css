@@ -179,9 +179,9 @@ a:hover {
    ========================================================================== */
 .app-container {
     width: 100%;
-    max-width: 1140px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 16px;
+    padding: 14px 16px 28px 16px;
     display: flex;
     flex-direction: column;
     min-height: 100vh;
@@ -192,25 +192,28 @@ a:hover {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 0 20px 0;
+    padding: 6px 0 16px 0;
     border-bottom: 1px solid var(--border-subtle);
-    margin-bottom: 24px;
+    margin-bottom: 20px;
+    gap: 8px;
 }
 
 .brand-wrapper {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     text-decoration: none;
     color: var(--text-primary);
+    flex-shrink: 0;
 }
 
 .brand-icon {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
 }
 
 .brand-icon svg {
@@ -220,13 +223,14 @@ a:hover {
 }
 
 .brand-name {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     font-weight: 700;
     letter-spacing: -0.02em;
     text-transform: uppercase;
 }
 
 .brand-badge {
+    display: none; /* Hidden on mobile to avoid overcrowding; shown on desktop */
     font-size: 0.68rem;
     letter-spacing: 0.05em;
     padding: 2px 6px;
@@ -240,17 +244,18 @@ a:hover {
 .header-controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
+    flex-shrink: 0;
 }
 
 /* Language selector */
 .lang-bar {
     display: flex;
     align-items: center;
-    gap: 6px;
 }
 
 .lang-label {
+    display: none; /* Accessible via aria-labelledby; hidden on mobile for clean spacing */
     font-size: 0.8rem;
     color: var(--text-muted);
     font-weight: 400;
@@ -261,14 +266,15 @@ a:hover {
     background: var(--bg-surface);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
-    padding: 6px 28px 6px 10px;
+    padding: 6px 24px 6px 9px;
+    height: 34px;
     border-radius: var(--radius-sm);
     font-size: 0.8rem;
     font-family: inherit;
     cursor: pointer;
     background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2371717a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
     background-repeat: no-repeat;
-    background-position: right 8px center;
+    background-position: right 7px center;
 }
 
 .lang-select:hover {
@@ -280,13 +286,14 @@ a:hover {
     background: transparent;
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
+    flex-shrink: 0;
     transition: background 0.15s ease, border-color 0.15s ease;
 }
 
@@ -296,8 +303,8 @@ a:hover {
 }
 
 .theme-toggle-btn svg {
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
 }
 
 /* ==========================================================================
@@ -307,22 +314,24 @@ a:hover {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
+    width: 100%;
 }
 
 .widget-card {
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-md);
-    padding: clamp(18px, 3vw, 28px);
+    padding: 18px 16px;
     box-shadow: var(--shadow-card);
+    width: 100%;
 }
 
 /* Downloader Centerpiece Widget */
 .downloader-widget {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 16px;
 }
 
 .hero-meta {
@@ -331,32 +340,32 @@ a:hover {
 
 .hero-tag {
     display: inline-block;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 
 h1, #app-heading {
-    font-size: clamp(1.4rem, 3.2vw, 2.1rem);
-    font-weight: 600;
-    letter-spacing: -0.03em;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
     color: var(--text-primary);
-    line-height: 1.25;
+    line-height: 1.3;
     margin-bottom: 8px;
 }
 
 p, #app-subtitle {
-    font-size: clamp(0.9rem, 1.8vw, 1rem);
+    font-size: 0.9rem;
     color: var(--text-secondary);
-    line-height: 1.55;
+    line-height: 1.5;
     font-weight: 400;
-    max-width: 680px;
+    max-width: 100%;
 }
 
-/* Platform Selector */
+/* Platform Selector — Predictable, Uniform Mobile Grid */
 .platform-section {
     display: flex;
     flex-direction: column;
@@ -381,25 +390,34 @@ p, #app-subtitle {
 }
 
 #platforms {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     gap: 8px;
+    width: 100%;
 }
 
 .platform-btn {
+    width: 100%;
+    height: 42px;
+    min-height: 42px;
     background: var(--bg-surface);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
-    padding: 7px 12px;
+    padding: 0 10px;
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 0.84rem;
     font-weight: 500;
     font-family: inherit;
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: center;
+    text-align: center;
     transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.platform-btn[data-platform="generic"] {
+    grid-column: span 2;
 }
 
 .platform-btn:hover:not(:disabled) {
@@ -427,6 +445,7 @@ p, #app-subtitle {
     flex-direction: column;
     gap: 12px;
     margin-top: 4px;
+    width: 100%;
 }
 
 .instruction, #input-instruction {
@@ -439,11 +458,13 @@ p, #app-subtitle {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    width: 100%;
 }
 
 input[type="text"], #url {
     width: 100%;
-    padding: 13px 14px;
+    height: 48px;
+    padding: 0 14px;
     border-radius: var(--radius-md);
     background: var(--input-bg);
     border: 1px solid var(--input-border);
@@ -466,13 +487,15 @@ input[type="text"]::placeholder {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    width: 100%;
 }
 
 button.action, .action-btn {
     width: 100%;
-    min-height: 44px;
-    padding: 12px 18px;
-    font-size: 0.88rem;
+    height: 48px;
+    min-height: 48px;
+    padding: 0 18px;
+    font-size: 0.92rem;
     font-weight: 600;
     font-family: inherit;
     letter-spacing: 0.02em;
@@ -509,32 +532,39 @@ button.action:disabled {
     border-color: var(--text-primary);
 }
 
-/* Consent verification */
+/* Consent verification — Accessible, Uncrowded Alignment */
 #consent-label, .consent-row {
     display: flex;
     align-items: flex-start;
-    gap: 9px;
+    gap: 10px;
     font-size: 0.82rem;
     color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
-    line-height: 1.4;
+    line-height: 1.45;
     margin-top: 4px;
+    width: 100%;
 }
 
 #consent {
     margin-top: 2px;
+    flex-shrink: 0;
     accent-color: var(--btn-primary-bg);
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
     cursor: pointer;
 }
 
+#consent-text {
+    flex: 1;
+}
+
 #why-consent, .small {
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     color: var(--text-muted);
     margin-left: 4px;
     text-decoration: underline;
+    white-space: nowrap;
 }
 
 /* ==========================================================================
@@ -848,11 +878,55 @@ footer, .site-footer {
 /* Tablet (768px - 1023px) */
 @media (min-width: 768px) {
     .app-container {
+        max-width: 1140px;
+        margin: 0 auto;
         padding: 24px 32px;
     }
 
     .site-header {
         margin-bottom: 32px;
+        padding: 14px 0 20px 0;
+    }
+
+    .brand-badge {
+        display: inline-block;
+    }
+
+    .lang-label {
+        display: inline-block;
+    }
+
+    .widget-card {
+        padding: 28px 32px;
+    }
+
+    h1, #app-heading {
+        font-size: 1.8rem;
+        line-height: 1.25;
+    }
+
+    p, #app-subtitle {
+        font-size: 0.96rem;
+        max-width: 680px;
+    }
+
+    #platforms {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        width: auto;
+    }
+
+    .platform-btn {
+        width: auto;
+        height: auto;
+        min-height: auto;
+        padding: 8px 14px;
+        font-size: 0.82rem;
+    }
+
+    .platform-btn[data-platform="generic"] {
+        grid-column: auto;
     }
 
     .input-box-wrapper {
@@ -868,9 +942,11 @@ footer, .site-footer {
     button.action {
         width: auto;
         min-width: 120px;
+        height: 48px;
     }
 
     .supporting-grid {
+        display: grid;
         grid-template-columns: repeat(2, 1fr);
         gap: 24px;
     }
@@ -880,9 +956,11 @@ footer, .site-footer {
     }
 }
 
-/* Desktop (1024px and above) */
+/* Desktop (1024px and above) — Preserves 100% Approved Design */
 @media (min-width: 1024px) {
     .app-container {
+        max-width: 1140px;
+        margin: 0 auto;
         padding: 32px 40px;
     }
 
@@ -892,6 +970,15 @@ footer, .site-footer {
 
     .downloader-widget {
         padding: 36px 40px;
+    }
+
+    h1, #app-heading {
+        font-size: 2.1rem;
+        line-height: 1.25;
+    }
+
+    p, #app-subtitle {
+        font-size: 1rem;
     }
 
     .platform-btn {
