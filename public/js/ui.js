@@ -289,7 +289,15 @@
                 elements.platformBtns.forEach((btn) => {
                     const platform = btn.dataset ? btn.dataset.platform : null;
                     if (platform) {
-                        btn.textContent = t(`platform.${platform}`, {}, lang);
+                        const labelText = t(`platform.${platform}`, {}, lang);
+                        btn.setAttribute("title", labelText);
+                        btn.setAttribute("aria-label", labelText);
+                        const labelSpan = btn.querySelector ? btn.querySelector(".platform-label") : null;
+                        if (labelSpan) {
+                            labelSpan.textContent = labelText;
+                        } else if (!btn.querySelector || !btn.querySelector("svg")) {
+                            btn.textContent = labelText;
+                        }
                     }
                 });
             }

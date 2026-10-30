@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const edgePath = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-const outDir = path.resolve('C:/Users/SantoshPrajapati-Tec/.gemini/antigravity/brain/bd266af1-4429-4da3-807d-da6a7ade43a0/screenshots/mobile-refinement');
+const outDir = path.resolve('C:/Users/SantoshPrajapati-Tec/.gemini/antigravity/brain/bd266af1-4429-4da3-807d-da6a7ade43a0/screenshots/icon-grid-design');
 
 if (!fs.existsSync(outDir)) {
     fs.mkdirSync(outDir, { recursive: true });
@@ -71,11 +71,11 @@ async function run() {
             { name: 'mobile-320x640', width: 320, height: 640 },
             { name: 'mobile-360x800', width: 360, height: 800 },
             { name: 'mobile-375x812', width: 375, height: 812 },
-            { name: 'mobile-390x844', width: 390, height: 844 },
             { name: 'mobile-393x852', width: 393, height: 852 },
             { name: 'mobile-412x915', width: 412, height: 915 },
             { name: 'mobile-430x932', width: 430, height: 932 },
             { name: 'tablet-768x1024', width: 768, height: 1024 },
+            { name: 'desktop-1024x768', width: 1024, height: 768 },
             { name: 'desktop-1440x900', width: 1440, height: 900 }
         ];
 

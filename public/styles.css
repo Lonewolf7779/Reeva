@@ -365,12 +365,13 @@ p, #app-subtitle {
     max-width: 100%;
 }
 
-/* Platform Selector — Predictable, Uniform Mobile Grid */
+/* Platform Selector — Monochromatic Icon Grid */
 .platform-section {
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-top: 4px;
+    width: 100%;
 }
 
 .section-label {
@@ -389,54 +390,77 @@ p, #app-subtitle {
     color: var(--text-primary);
 }
 
-#platforms {
+#platforms, .platform-icon-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
+    grid-template-columns: repeat(4, 1fr);
+    background: var(--border-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    gap: 1px;
+    overflow: hidden;
     width: 100%;
 }
 
 .platform-btn {
     width: 100%;
-    height: 42px;
-    min-height: 42px;
+    height: 52px;
+    min-height: 52px;
     background: var(--bg-surface);
     color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 0 10px;
-    border-radius: var(--radius-sm);
+    border: none;
+    border-radius: 0;
     cursor: pointer;
-    font-size: 0.84rem;
-    font-weight: 500;
-    font-family: inherit;
     display: flex;
     align-items: center;
     justify-content: center;
-    text-align: center;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    padding: 0;
+    position: relative;
+    transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
-.platform-btn[data-platform="generic"] {
-    grid-column: span 2;
+.platform-btn .platform-icon {
+    width: 22px;
+    height: 22px;
+    display: block;
+    fill: currentColor;
+    color: var(--text-primary);
+    transition: transform 0.15s ease, opacity 0.15s ease;
 }
 
 .platform-btn:hover:not(:disabled) {
     background: var(--bg-surface-hover);
-    border-color: var(--text-primary);
+}
+
+.platform-btn:hover:not(:disabled) .platform-icon {
+    transform: scale(1.05);
 }
 
 .platform-btn.active {
+    background: var(--bg-surface-active);
+    color: var(--text-primary);
+}
+
+.platform-btn.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 20%;
+    right: 20%;
+    height: 2px;
     background: var(--btn-primary-bg);
-    border-color: var(--btn-primary-bg);
-    color: var(--btn-primary-text);
 }
 
 .platform-btn:disabled,
 .platform-btn.disabled {
-    opacity: 0.45;
+    opacity: 0.35;
     cursor: not-allowed;
     background: var(--bg-subtle);
-    border-color: var(--border-subtle);
+}
+
+.platform-btn:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: -2px;
+    z-index: 2;
 }
 
 /* Input & Action Section */
@@ -910,19 +934,20 @@ footer, .site-footer {
         max-width: 680px;
     }
 
-    #platforms {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        width: auto;
+    #platforms, .platform-icon-grid {
+        grid-template-columns: repeat(7, 1fr);
+        max-width: 560px;
+        height: 52px;
+        border-radius: var(--radius-md);
     }
 
     .platform-btn {
-        width: auto;
-        height: auto;
-        min-height: auto;
-        padding: 8px 14px;
-        font-size: 0.82rem;
+        width: 100%;
+        height: 52px;
+        min-height: 52px;
+        border: none;
+        border-radius: 0;
+        padding: 0;
     }
 
     .platform-btn[data-platform="generic"] {
@@ -979,11 +1004,6 @@ footer, .site-footer {
 
     p, #app-subtitle {
         font-size: 1rem;
-    }
-
-    .platform-btn {
-        padding: 8px 14px;
-        font-size: 0.82rem;
     }
 
     .supporting-grid {
