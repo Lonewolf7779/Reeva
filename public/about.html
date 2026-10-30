@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="utf-8" />
+    <title>About Reeva — Universal Media Downloader</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Learn about Reeva: an open-source, minimalist technical utility designed for secure, high-fidelity public media retrieval and archival." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="About Reeva — Universal Media Downloader" />
+    <meta property="og:description" content="Learn about Reeva: an open-source, minimalist technical utility designed for secure, high-fidelity public media retrieval and archival." />
+    <meta property="og:type" content="article" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="About Reeva — Universal Media Downloader" />
+    <meta name="twitter:description" content="Learn about Reeva: an open-source, minimalist technical utility designed for secure, high-fidelity public media retrieval and archival." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Site Header -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
+
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/" class="nav-link">Downloader</a>
+                <a href="/how-to-use.html" class="nav-link">How to Use</a>
+                <a href="/platforms.html" class="nav-link">Platforms</a>
+                <a href="/faq.html" class="nav-link">FAQ</a>
+                <a href="/about.html" class="nav-link active">About</a>
+            </nav>
+
+            <div class="header-controls">
+                <a href="/" class="back-link">← Return to Tool</a>
+            </div>
+        </header>
+
+        <!-- Main Body -->
+        <main class="main-content">
+            <article class="policy-card">
+                <header class="policy-header">
+                    <h1>About Reeva</h1>
+                    <p>Open-source, hardened technical utility for public media preservation.</p>
+                </header>
+
+                <div class="policy-body">
+                    <section>
+                        <h2>1. Mission & Vision</h2>
+                        <p>The modern web is transient. Content published to social media networks and video sharing platforms frequently disappears due to policy shifts, algorithmic delisting, account removals, or platform sunsetting. Reeva was developed as an open-source engineering response to this fragility: a fast, secure, minimalist media utility that allows creators, researchers, journalists, and everyday users to retrieve and preserve publicly accessible media for personal, educational, and archival use.</p>
+                    </section>
+
+                    <section id="security">
+                        <h2>2. Security by Design</h2>
+                        <p>Unlike ad-cluttered downloader websites that expose users to invasive popups, redirect loops, and malicious third-party scripts, Reeva adheres to uncompromising security principles:</p>
+                        <ul>
+                            <li><strong>Zero Popups or Malicious Advertising:</strong> Reeva contains zero aggressive ad scripts, fake download buttons, or intrusive tracking software.</li>
+                            <li><strong>Strict TLS Certificate Verification:</strong> Reeva rejects insecure connections, man-in-the-middle proxies, and invalid leaf signatures, guaranteeing that media extraction communicates strictly with official endpoints.</li>
+                            <li><strong>DNS-Pinned Anti-SSRF Defense:</strong> Sockets are validated prior to connection to forbid interaction with internal networks, loopback addresses, or cloud metadata services.</li>
+                            <li><strong>Isolated Runner Sandboxing:</strong> External helper binaries operate in restricted subprocesses with explicit timeouts and process isolation.</li>
+                        </ul>
+                    </section>
+
+                    <section id="storage">
+                        <h2>3. Ephemeral Scratch Storage</h2>
+                        <p>Reeva operates under a strict data-minimization model. We do not maintain a permanent video hosting service, media catalog, or user file repository. When format transcoding or video/audio track combination is required, temporary artifacts are written to a restricted local scratch space. An automated cleanup daemon unlinks and purges all expired artifacts every 60 seconds with an absolute 10-minute maximum lifespan.</p>
+                    </section>
+
+                    <section>
+                        <h2>4. Honest Architectural Transparency</h2>
+                        <p>Reeva values technical honesty above all else. We do not claim universal compatibility or promise downloads for media restricted by access controls:</p>
+                        <ul>
+                            <li>We do not bypass CAPTCHAs, paywalls, or authentication boundaries.</li>
+                            <li>We do not circumvent digital rights management (DRM) or geographic bans.</li>
+                            <li>When upstream platform terms forbid direct binary extraction, Reeva gracefully falls back to official sandboxed embedded player integration rather than failing silently or fabricating downloads.</li>
+                        </ul>
+                    </section>
+
+                    <section>
+                        <h2>5. Independence & Disclaimers</h2>
+                        <p>Reeva is an independent open-source technical tool developed for personal backup and educational archival. Reeva is not affiliated with, authorized, maintained, sponsored, or endorsed by YouTube, Meta (Instagram, Facebook), ByteDance (TikTok), X Corp (Twitter), Pinterest, or any of their affiliates or subsidiaries. All brand trademarks, logos, and service marks remain the property of their respective owners.</p>
+                    </section>
+                </div>
+            </article>
+
+            <!-- Reserved Advertisement Container (AdSense Readiness) -->
+            <aside class="ad-slot-editorial" aria-label="Sponsor Area">
+                <span class="ad-slot-label">Editorial Sponsorship</span>
+                <span class="ad-slot-placeholder">Reserved editorial sponsorship space &mdash; strictly separated from downloader controls</span>
+            </aside>
+        </main>
+
+        <!-- Site Footer -->
+        <footer class="site-footer">
+            <div class="footer-bottom">
+                <div class="footer-links">
+                    <a href="/privacy.html" class="footer-link">Privacy Policy</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/terms.html" class="footer-link">Terms of Service</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/copyright.html" class="footer-link">DMCA / Copyright</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/contact.html" class="footer-link">Contact</a>
+                </div>
+                <div class="footer-copy">
+                    <span>Disclaimer: This tool is for personal and educational use only.</span>
+                    <span>We never store or host media. All rights belong to their respective owners.</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+</body>
+
+</html>

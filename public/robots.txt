@@ -1,6 +1,14 @@
 # robots.txt — Reeva Public Media Downloader
 User-agent: *
 Allow: /
+Allow: /how-to-use.html
+Allow: /platforms.html
+Allow: /faq.html
+Allow: /about.html
+Allow: /contact.html
+Allow: /copyright.html
 Allow: /privacy.html
 Allow: /terms.html
 Disallow: /api/
+
+Sitemap: /sitemap.xml
