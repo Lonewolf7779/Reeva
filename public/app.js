@@ -284,6 +284,40 @@ function createAppController(options = {}) {
     const capabilitiesPromise = loadCapabilities();
 
     // =========================================================================
+    // Theme Toggle Handler
+    // =========================================================================
+    const themeBtn = doc.getElementById ? doc.getElementById("theme-toggle") : null;
+    if (themeBtn) {
+        try {
+            const storedTheme = win && win.localStorage && typeof win.localStorage.getItem === "function"
+                ? win.localStorage.getItem("reeva_theme")
+                : null;
+            if (storedTheme === "dark" && doc.documentElement && typeof doc.documentElement.setAttribute === "function") {
+                doc.documentElement.setAttribute("data-theme", "dark");
+            }
+        } catch (_) {}
+
+        themeBtn.addEventListener("click", () => {
+            try {
+                const currentTheme = doc.documentElement && typeof doc.documentElement.getAttribute === "function"
+                    ? doc.documentElement.getAttribute("data-theme")
+                    : null;
+                const newTheme = currentTheme === "dark" ? "light" : "dark";
+                if (doc.documentElement) {
+                    if (newTheme === "dark" && typeof doc.documentElement.setAttribute === "function") {
+                        doc.documentElement.setAttribute("data-theme", "dark");
+                    } else if (typeof doc.documentElement.removeAttribute === "function") {
+                        doc.documentElement.removeAttribute("data-theme");
+                    }
+                }
+                if (win && win.localStorage && typeof win.localStorage.setItem === "function") {
+                    win.localStorage.setItem("reeva_theme", newTheme);
+                }
+            } catch (_) {}
+        });
+    }
+
+    // =========================================================================
     // 4. Consent Dialog
     // =========================================================================
     if (elements.whyConsent) {

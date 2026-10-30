@@ -18,58 +18,168 @@
 </head>
 
 <body>
-    <div class="card">
-        <div class="lang-bar">
-            <label id="lang-label" for="lang-select" class="lang-label">Language:</label>
-            <select id="lang-select" class="lang-select" aria-labelledby="lang-label">
-                <option value="en">English</option>
-                <option value="hi">हिन्दी (Hindi)</option>
-            </select>
-        </div>
+    <div class="app-container card">
+        <!-- Site Header & Navigation -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
 
-        <h2 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h2>
-        <p id="app-subtitle">Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+            <div class="header-controls">
+                <div class="lang-bar">
+                    <label id="lang-label" for="lang-select" class="lang-label">Language:</label>
+                    <select id="lang-select" class="lang-select" aria-labelledby="lang-label">
+                        <option value="en">English</option>
+                        <option value="hi">हिन्दी (Hindi)</option>
+                    </select>
+                </div>
+                <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Toggle visual theme" title="Toggle theme">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+            </div>
+        </header>
 
-        <!-- Platform Selector -->
-        <div id="platforms">
-            <button class="platform-btn disabled" data-platform="instagram" type="button" disabled aria-disabled="true">Instagram</button>
-            <button class="platform-btn disabled" data-platform="facebook" type="button" disabled aria-disabled="true">Facebook</button>
-            <button class="platform-btn disabled" data-platform="twitter" type="button" disabled aria-disabled="true">Twitter (X)</button>
-            <button class="platform-btn disabled" data-platform="pinterest" type="button" disabled aria-disabled="true">Pinterest</button>
-            <button class="platform-btn disabled" data-platform="youtube" type="button" disabled aria-disabled="true">YouTube</button>
-            <button class="platform-btn disabled" data-platform="tiktok" type="button" disabled aria-disabled="true">TikTok</button>
-            <button class="platform-btn disabled" data-platform="generic" type="button" disabled aria-disabled="true">More Sites</button>
-        </div>
+        <!-- Main Work Area -->
+        <main class="main-content">
+            <!-- Downloader Centerpiece Widget -->
+            <section class="widget-card downloader-widget" aria-labelledby="app-heading">
+                <div class="hero-meta">
+                    <span class="hero-tag">Direct Media Utility</span>
+                    <h1 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h1>
+                    <p id="app-subtitle">Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+                </div>
 
-        <p class="instruction" id="input-instruction">Paste your link below and click Get.</p>
-        <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" aria-label="Video URL" />
+                <!-- Platform Selector Widget -->
+                <div class="platform-section">
+                    <span class="section-label">Supported Platforms</span>
+                    <div id="platforms" role="group" aria-label="Select platform">
+                        <button class="platform-btn disabled" data-platform="instagram" type="button" disabled aria-disabled="true">Instagram</button>
+                        <button class="platform-btn disabled" data-platform="facebook" type="button" disabled aria-disabled="true">Facebook</button>
+                        <button class="platform-btn disabled" data-platform="twitter" type="button" disabled aria-disabled="true">Twitter (X)</button>
+                        <button class="platform-btn disabled" data-platform="pinterest" type="button" disabled aria-disabled="true">Pinterest</button>
+                        <button class="platform-btn disabled" data-platform="youtube" type="button" disabled aria-disabled="true">YouTube</button>
+                        <button class="platform-btn disabled" data-platform="tiktok" type="button" disabled aria-disabled="true">TikTok</button>
+                        <button class="platform-btn disabled" data-platform="generic" type="button" disabled aria-disabled="true">More Sites</button>
+                    </div>
+                </div>
 
-        <div class="row">
-            <button id="get" class="action" type="button" disabled aria-disabled="true">Get</button>
-            <button id="download" class="action hidden" type="button" aria-hidden="true">Download</button>
-        </div>
+                <!-- Input & Actions Widget -->
+                <div class="input-section">
+                    <p class="instruction" id="input-instruction">Paste your link below and click Get.</p>
+                    <div class="input-box-wrapper">
+                        <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" aria-label="Video URL" />
+                        <div class="row action-row">
+                            <button id="get" class="action" type="button" disabled aria-disabled="true">Get</button>
+                            <button id="download" class="action hidden" type="button" aria-hidden="true">Download</button>
+                        </div>
+                    </div>
 
-        <label id="consent-label">
-            <input id="consent" type="checkbox">
-            <span id="consent-text">I confirm I own or have permission to download this content.</span>
-            <a id="why-consent" class="small" href="#">Why?</a>
-        </label>
+                    <!-- Consent Confirmation -->
+                    <label id="consent-label" class="consent-row">
+                        <input id="consent" type="checkbox">
+                        <span id="consent-text">I confirm I own or have permission to download this content.</span>
+                        <a id="why-consent" class="small" href="#">Why?</a>
+                    </label>
+                </div>
+            </section>
 
-        <div id="log" role="status" aria-live="polite"></div>
-        <video id="preview" controls class="hidden" aria-label="Media preview"></video>
-        <div id="embed-container" class="hidden" aria-label="Embedded media player"></div>
+            <!-- Results & Output Widget -->
+            <section class="widget-card results-widget" aria-label="Media results and status">
+                <div id="log" role="status" aria-live="polite"></div>
+                <video id="preview" controls class="hidden" aria-label="Media preview"></video>
+                <div id="embed-container" class="hidden" aria-label="Embedded media player"></div>
+            </section>
 
-        <footer>
+            <!-- Supporting Information Grid -->
+            <div class="supporting-grid">
+                <!-- How It Works Module -->
+                <section class="widget-card" aria-labelledby="how-it-works-title">
+                    <span class="section-label">Workflow</span>
+                    <h2 id="how-it-works-title" class="widget-heading">How Reeva Works</h2>
+                    <div class="steps-list">
+                        <div class="step-item">
+                            <span class="step-num">01</span>
+                            <div class="step-content">
+                                <h3>Paste Public Link</h3>
+                                <p>Provide a public video or reel URL from any supported network.</p>
+                            </div>
+                        </div>
+                        <div class="step-item">
+                            <span class="step-num">02</span>
+                            <div class="step-content">
+                                <h3>Validate & Extract</h3>
+                                <p>Our hardened backend analyzes headers, streams, and resolves high-quality media.</p>
+                            </div>
+                        </div>
+                        <div class="step-item">
+                            <span class="step-num">03</span>
+                            <div class="step-content">
+                                <h3>Preview & Download</h3>
+                                <p>Inspect your media in the native player and save it directly to your device.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Technical & Security Specifications Module -->
+                <section class="widget-card" aria-labelledby="system-specs-title">
+                    <span class="section-label">Engineering Specifications</span>
+                    <h2 id="system-specs-title" class="widget-heading">Architecture & Security</h2>
+                    <div class="specs-grid">
+                        <div class="spec-item">
+                            <div class="spec-title">Strict TLS Verification</div>
+                            <div class="spec-desc">Zero man-in-the-middle bypasses. Validates official platform certificates end-to-end.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Anti-SSRF Protections</div>
+                            <div class="spec-desc">DNS-pinned socket requests strictly prohibiting access to internal or private IP ranges.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Ephemeral Scratch Storage</div>
+                            <div class="spec-desc">No media persistence. Files are automatically deleted after 10 minutes by a background daemon.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Sandboxed Fallback Player</div>
+                            <div class="spec-desc">Restricted iframe sandbox when platform policies enforce official embed rendering.</div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <!-- Site Footer -->
+        <footer class="site-footer">
             <div class="footer-links">
                 <a href="/privacy.html" class="footer-link" id="link-privacy">Privacy Policy</a>
                 <span class="footer-sep" aria-hidden="true">•</span>
                 <a href="/terms.html" class="footer-link" id="link-terms">Terms of Service</a>
             </div>
-            <span id="footer-disclaimer">Disclaimer: This tool is for personal and educational use only.</span><br>
-            <span id="footer-copyright">We never store or host media. All rights belong to their respective owners.</span>
+            <div class="footer-copy">
+                <span id="footer-disclaimer">Disclaimer: This tool is for personal and educational use only.</span>
+                <span id="footer-copyright">We never store or host media. All rights belong to their respective owners.</span>
+            </div>
         </footer>
     </div>
 
+    <!-- Application Scripts -->
     <script src="/js/i18n.js" defer></script>
     <script src="/js/state.js" defer></script>
     <script src="/js/api.js" defer></script>
