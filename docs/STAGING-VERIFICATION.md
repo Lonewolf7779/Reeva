@@ -73,7 +73,7 @@ async function checkHost(host) {
 
 ## 3. Automated Staging Verification Harness
 
-Reeva includes a dedicated verification harness in `scripts/verify-staging-platforms.cjs` that executes full-pipeline testing with strict certificate verification:
+Reeva includes a comprehensive multi-stage verification harness in `scripts/verify-staging-platforms.cjs` that executes full-pipeline testing with strict certificate verification:
 
 ```bash
 # Verify all remaining platforms (Instagram, Facebook, TikTok) with formatted console table
@@ -85,17 +85,28 @@ node scripts/verify-staging-platforms.cjs facebook
 node scripts/verify-staging-platforms.cjs tiktok
 
 # Verify a specific custom staging URL
-node scripts/verify-staging-platforms.cjs instagram --url "https://www.instagram.com/p/C_sampleShortcode/"
+node scripts/verify-staging-platforms.cjs instagram --url "https://www.instagram.com/reel/C8oP4qNtxZ7/"
 
 # Output machine-readable JSON for CI/CD staging automation pipelines
 node scripts/verify-staging-platforms.cjs --json
 ```
 
-The harness automatically checks environment prerequisites (Node >= 20, OpenSSL, FFmpeg, yt-dlp) and distinguishes:
-1. **Network Diagnostics:** DNS resolution, TCP port 443 connectivity, strict TLS handshake (`rejectUnauthorized: true`), peer certificate verification, and middlebox inspection identification.
-2. **Adapter Extraction:** OpenGraph parsing, JSON state traversal, mobile web scraping, and yt-dlp child process isolation.
-3. **Media Streaming:** Secure HTTP stream retrieval into temporary storage enforcing media CDN allowlists.
-4. **Media Validation:** Magic byte sniffing (MP4 `ftyp`, WebM EBML) and FFmpeg null-mux decode (`ffmpeg -v error -i ... -f null -`).
+The harness automatically checks environment prerequisites (Node >= 20, OpenSSL, FFmpeg, yt-dlp) and independently distinguishes every layer:
+1. **Network Diagnostics:**
+   * **DNS:** System DNS resolution capturing all assigned IP addresses.
+   * **TCP:** Independent raw TCP port 443 socket connection via `net.connect()` with connection timeout and socket closure.
+   * **TLS:** Independent TLS handshake with strict `rejectUnauthorized: true`, recording peer certificates and middlebox inspection issuers.
+2. **HTTP Diagnostic Probe:**
+   * Issues a bounded diagnostic probe (HEAD first; falls back to bounded GET with `Range: bytes=0-2047` if HEAD returns 405/501).
+   * Records HTTP status, Content-Type, Content-Length, and redirect destinations without downloading the full media payload.
+3. **Adapter Extraction:**
+   * Executes official platform adapters (`extractInstagram`, `extractFacebook`, `extractTikTok`) within Reeva-controlled security boundaries.
+4. **Early Media Response Validation:**
+   * Validates response headers before writing chunks to disk: immediately rejects HTML challenge pages (`text/html`), JSON error payloads (`application/json`), and zero-byte bodies (`Content-Length: 0`).
+5. **Media Stream Download & Validation:**
+   * Streams media bytes into temporary storage enforcing media CDN allowlists.
+   * Verifies container magic bytes (MP4 `ftyp`, WebM `EBML`).
+   * Executes FFmpeg null-mux decode (`ffmpeg -v error -i ... -f null -`) to guarantee stream integrity.
 
 ---
 
