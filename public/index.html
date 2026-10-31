@@ -66,8 +66,11 @@
 
         <!-- Main Work Area -->
         <main class="main-content">
-            <!-- Downloader Centerpiece Widget -->
-            <section class="widget-card downloader-widget" aria-labelledby="app-heading">
+            <div class="workspace-layout">
+                <!-- Left Column: Downloader Core & Results -->
+                <div class="workspace-main-column">
+                    <!-- Downloader Centerpiece Widget -->
+                    <section class="widget-card downloader-widget" aria-labelledby="app-heading">
                 <div class="hero-meta">
                     <span class="hero-tag">Direct Media Utility</span>
                     <h1 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h1>
@@ -149,6 +152,49 @@
                 <video id="preview" controls class="hidden" aria-label="Media preview"></video>
                 <div id="embed-container" class="hidden" aria-label="Embedded media player"></div>
             </section>
+        </div>
+
+        <!-- Right Column (Desktop) / Companion Stage (Mobile): Dedicated Visual Novel Companion -->
+        <aside id="companion-stage" class="widget-card companion-stage" aria-label="Reeva Anime Companion">
+            <div class="companion-stage-header">
+                <div class="companion-identity">
+                    <span class="companion-pulse-dot" aria-hidden="true"></span>
+                    <span class="companion-name">Reeva</span>
+                    <span class="companion-role-badge">Companion</span>
+                </div>
+                <div class="companion-mood">
+                    <span id="companion-mood-tag" class="companion-mood-tag">Ready</span>
+                </div>
+            </div>
+
+            <!-- Visual Novel Speech Dialogue Box -->
+            <div id="companion-dialogue" class="companion-dialogue-card" role="status" aria-live="polite">
+                <div class="companion-dialogue-header">
+                    <span class="companion-speaker-label">Reeva</span>
+                    <button id="companion-dialogue-close" class="companion-dialogue-close-btn" type="button" aria-label="Dismiss message">&times;</button>
+                </div>
+                <p id="companion-dialogue-text" class="companion-dialogue-text">Hey there! Ready to download your favorite media?</p>
+            </div>
+
+            <!-- Character Portrait Frame -->
+            <div class="companion-portrait-frame">
+                <div id="anime-companion-root" class="companion-character-wrap" aria-label="Reeva Visual Novel Character">
+                    <div id="comp-sprite-container" class="companion-sprite-container">
+                        <img id="comp-expr-happy" class="comp-expr-img" src="/img/companion/expressions/happy.png" alt="Reeva Happy" />
+                        <img id="comp-expr-smiling" class="comp-expr-img hidden" src="/img/companion/expressions/smiling.png" alt="Reeva Smiling" />
+                        <img id="comp-expr-excited" class="comp-expr-img hidden" src="/img/companion/expressions/excited.png" alt="Reeva Excited" />
+                        <img id="comp-expr-curious" class="comp-expr-img hidden" src="/img/companion/expressions/curious.png" alt="Reeva Curious" />
+                        <img id="comp-expr-focused" class="comp-expr-img hidden" src="/img/companion/expressions/focused.png" alt="Reeva Focused" />
+                        <img id="comp-expr-surprised" class="comp-expr-img hidden" src="/img/companion/expressions/surprised.png" alt="Reeva Surprised" />
+                        <img id="comp-expr-confused" class="comp-expr-img hidden" src="/img/companion/expressions/confused.png" alt="Reeva Confused" />
+                        <img id="comp-expr-disappointed" class="comp-expr-img hidden" src="/img/companion/expressions/disappointed.png" alt="Reeva Disappointed" />
+                        <img id="comp-expr-crying" class="comp-expr-img hidden" src="/img/companion/expressions/crying.png" alt="Reeva Crying" />
+                        <img id="comp-expr-celebrating" class="comp-expr-img hidden" src="/img/companion/expressions/celebrating.png" alt="Reeva Celebrating" />
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
 
             <!-- Supporting Information Grid -->
             <div class="supporting-grid">
@@ -266,9 +312,6 @@
             </div>
         </footer>
     </div>
-
-    <!-- Interactive Anime Companion Root -->
-    <div id="anime-companion-root" aria-label="Interactive Anime Companion"></div>
 
     <!-- Application Scripts -->
     <script src="/js/i18n.js" defer></script>

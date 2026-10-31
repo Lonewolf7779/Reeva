@@ -208,107 +208,226 @@ a:hover {
 }
 
 /* ==========================================================================
-   2.5 Interactive Anime Companion System (.companion-dock-wrapper)
+   2.5 Visual Novel Companion System (.companion-stage)
    ========================================================================== */
-#anime-companion-root {
-    position: fixed;
-    bottom: 14px;
-    right: 12px;
-    z-index: 999;
-    pointer-events: none;
+.workspace-layout {
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
-}
-
-.companion-dock-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    pointer-events: none;
-}
-
-.companion-character-avatar {
-    width: 95px;
-    height: 114px;
-    pointer-events: auto;
-    cursor: pointer;
-    user-select: none;
-    filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.08));
-    animation: companionBreath 4.4s ease-in-out infinite;
-    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-    transform-origin: bottom center;
-}
-
-.companion-character-avatar:hover {
-    transform: scale(1.04) translateY(-2px);
-}
-
-.companion-character-avatar svg {
+    gap: 20px;
+    margin-bottom: 24px;
     width: 100%;
-    height: 100%;
-    display: block;
-    overflow: visible;
 }
 
-/* Variant state switcher helper */
-.comp-variant-hidden {
-    display: none !important;
-}
-
-/* Floating Contextual Speech Bubble */
-.companion-speech-bubble {
-    background: var(--bg-surface);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 1px solid var(--border-color);
-    border-radius: 14px 14px 2px 14px;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.09);
-    padding: 10px 14px;
-    max-width: 250px;
-    font-size: 0.84rem;
-    line-height: 1.45;
-    color: var(--text-primary);
-    pointer-events: auto;
-    position: relative;
-    margin-bottom: 8px;
+.workspace-main-column {
     display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    transform-origin: bottom right;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+    min-width: 0;
 }
 
-.companion-speech-bubble::after {
-    content: '';
-    position: absolute;
-    bottom: -6px;
-    right: 18px;
-    width: 10px;
-    height: 6px;
+/* Dedicated Companion Stage Card */
+.companion-stage {
     background: var(--bg-surface);
-    clip-path: polygon(0 0, 100% 0, 50% 100%);
-    border-top: 1px solid var(--border-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.companion-speech-text {
-    flex: 1;
-    font-weight: 400;
-    margin: 0;
+.companion-stage:hover {
+    border-color: var(--border-hover);
 }
 
-.companion-speech-close {
+.companion-stage-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 12px;
+}
+
+.companion-identity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+}
+
+.companion-pulse-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #10b981;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+    display: inline-block;
+    animation: companionPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes companionPulse {
+    0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+    }
+    50% {
+        transform: scale(1.15);
+        box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.1);
+    }
+}
+
+.companion-name {
+    font-weight: 600;
+}
+
+.companion-role-badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 7px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.companion-mood-tag {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--bg-main);
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Visual Novel Dialogue Card */
+.companion-dialogue-card {
+    background: var(--bg-main);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+}
+
+.companion-dialogue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.companion-speaker-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.companion-dialogue-close-btn {
     background: transparent;
     border: none;
     font-size: 1.1rem;
     line-height: 1;
     color: var(--text-muted);
     cursor: pointer;
-    padding: 0 2px;
+    padding: 0 4px;
     transition: color 0.15s ease;
 }
 
-.companion-speech-close:hover {
+.companion-dialogue-close-btn:hover {
     color: var(--text-primary);
+}
+
+.companion-dialogue-text {
+    font-size: 0.88rem;
+    line-height: 1.48;
+    color: var(--text-primary);
+    margin: 0;
+    font-weight: 400;
+}
+
+/* Character Portrait Frame */
+.companion-portrait-frame {
+    width: 100%;
+    min-height: 250px;
+    height: 322px;
+    max-height: 340px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--radius-sm);
+    background: radial-gradient(circle at 50% 40%, rgba(0, 0, 0, 0.015) 0%, transparent 70%);
+}
+
+.companion-character-wrap {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    position: relative;
+}
+
+.companion-sprite-container {
+    width: 256px;
+    height: 322px;
+    max-width: 100%;
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    transform-origin: bottom center;
+    will-change: transform;
+    user-select: none;
+}
+
+.comp-expr-img {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: auto;
+    height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+    transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s ease;
+    filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.06));
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.comp-expr-img.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.comp-expr-img:not(.hidden) {
+    opacity: 1;
+}
+
+/* Dark mode adjustment for portrait card */
+[data-theme="dark"] .companion-portrait-frame {
+    background: radial-gradient(circle at 50% 40%, rgba(255, 255, 255, 0.03) 0%, transparent 70%);
+}
+
+[data-theme="dark"] .comp-expr-img {
+    filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.4));
 }
 
 /* Animations */
@@ -332,7 +451,7 @@ a:hover {
 @keyframes bubblePop {
     0% {
         opacity: 0;
-        transform: scale(0.85) translateY(10px);
+        transform: scale(0.96) translateY(6px);
     }
     100% {
         opacity: 1;
@@ -347,7 +466,7 @@ a:hover {
     }
     100% {
         opacity: 0;
-        transform: scale(0.9) translateY(6px);
+        transform: scale(0.96) translateY(4px);
     }
 }
 
@@ -357,8 +476,8 @@ a:hover {
 
 @keyframes compBounce {
     0%, 100% { transform: translateY(0); }
-    35% { transform: translateY(-20px) scale(1.05); }
-    70% { transform: translateY(0) scale(0.98); }
+    35% { transform: translateY(-16px) scale(1.03); }
+    70% { transform: translateY(0) scale(0.99); }
 }
 
 /* Smooth Entrance Keyframe Animations */
@@ -1486,20 +1605,14 @@ footer, .site-footer {
         grid-template-columns: repeat(2, 1fr);
     }
 
-    /* Tablet Companion Positioning */
-    #anime-companion-root {
-        bottom: 22px;
-        right: 24px;
+    /* Tablet Workspace & Companion */
+    .companion-portrait-frame {
+        height: 300px;
     }
 
-    .companion-character-avatar {
-        width: 120px;
-        height: 144px;
-    }
-
-    .companion-speech-bubble {
-        max-width: 290px;
-        font-size: 0.88rem;
+    .companion-sprite-container {
+        width: 250px;
+        height: 310px;
     }
 }
 
@@ -1533,20 +1646,28 @@ footer, .site-footer {
         max-width: 620px;
     }
 
-    /* Desktop Companion Positioning */
-    #anime-companion-root {
-        bottom: 28px;
-        right: 36px;
+    /* Desktop Workspace & Companion Beside Downloader */
+    .workspace-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.95fr);
+        gap: 28px;
+        align-items: stretch;
     }
 
-    .companion-character-avatar {
-        width: 140px;
-        height: 168px;
+    .companion-stage {
+        padding: 28px 24px;
+        min-height: 480px;
+        justify-content: flex-start;
     }
 
-    .companion-speech-bubble {
-        max-width: 320px;
-        font-size: 0.9rem;
+    .companion-portrait-frame {
+        height: 350px;
+        max-height: 370px;
+    }
+
+    .companion-sprite-container {
+        width: 275px;
+        height: 345px;
     }
 
     .supporting-grid {

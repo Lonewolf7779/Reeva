@@ -81,7 +81,8 @@ function createAppController(options = {}) {
     let companion = null;
     const companionLib = (win && win.ReevaCompanion) || (typeof ReevaCompanion !== "undefined" ? ReevaCompanion : null);
     if (companionLib && typeof companionLib.initCompanion === "function") {
-        companion = companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
+        companion = companionLib.initCompanion("companion-stage", { initialLanguage: initialLang }) ||
+                    companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
         if (companion) {
             setTimeout(() => {
                 companion.triggerState(companionLib.STATES.WELCOME, 4000);
