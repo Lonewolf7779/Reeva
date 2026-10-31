@@ -24,7 +24,7 @@ permissions:
 env:
   RESOURCE_GROUP: "reeva-rg"
   ACR_NAME: "reevaacr20261031"
-  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2jgtbxb6c5hv.azurecr.io"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
   IMAGE_NAME: "reeva"
   TARGET_ARCH: "amd64"
 

@@ -7,7 +7,7 @@
 
 This guide details the exact steps required to configure **OpenID Connect (OIDC)** authentication between **GitHub Actions** and **Microsoft Azure**.
 
-This allows GitHub-hosted runners to build the `linux/amd64` Docker image and push directly to `reevaacr20261031-hpg2jgtbxb6c5hv.azurecr.io/reeva:mobile-test` **without requiring Azure Container Registry admin user credentials, permanent passwords, or long-lived client secrets**.
+This allows GitHub-hosted runners to build the `linux/amd64` Docker image and push directly to `reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io/reeva:mobile-test` **without requiring Azure Container Registry admin user credentials, permanent passwords, or long-lived client secrets**.
 
 ---
 
@@ -114,4 +114,4 @@ The workflow will:
 3. Connect securely via OIDC.
 4. Authenticate to `reevaacr20261031` via Azure CLI.
 5. Build the multi-stage Dockerfile for `linux/amd64`.
-6. Push `reevaacr20261031-hpg2jgtbxb6c5hv.azurecr.io/reeva:mobile-test`.
+6. Push `reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io/reeva:mobile-test`.
