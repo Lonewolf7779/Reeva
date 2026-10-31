@@ -25,6 +25,8 @@ echo " Region:         ${LOCATION}"
 echo " Container App:  ${APP_NAME}"
 echo " Target Image:   ${FULL_IMAGE}"
 echo " Target Port:    ${TARGET_PORT}"
+echo " Feature Gates:  YouTube=ON, Twitter=ON, Pinterest=ON, Generic=ON"
+echo "                 Instagram=OFF, TikTok=OFF, Facebook=OFF"
 echo "=================================================================="
 
 # ------------------------------------------------------------------------------
@@ -128,10 +130,27 @@ if [ -z "$EXISTING_ROLE" ]; then
         --assignee "${PRINCIPAL_ID}" \
         --role "AcrPull" \
         --scope "${ACR_ID}"
-    echo "Waiting 15 seconds for Azure RBAC propagation..."
+    
+    echo "Waiting for Azure RBAC propagation across regional endpoints..."
+    MAX_ATTEMPTS=12
+    ATTEMPT=1
+    while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+        ROLE_CONFIRMED=$(az role assignment list \
+            --assignee "${PRINCIPAL_ID}" \
+            --scope "${ACR_ID}" \
+            --query "[?roleDefinitionName=='AcrPull'].id" -o tsv 2>/dev/null || true)
+        if [ -n "$ROLE_CONFIRMED" ]; then
+            echo "AcrPull role verified on attempt ${ATTEMPT}."
+            break
+        fi
+        echo "Waiting for role assignment visibility (attempt ${ATTEMPT}/${MAX_ATTEMPTS})..."
+        sleep 5
+        ATTEMPT=$((ATTEMPT + 1))
+    done
+    echo "Allowing 15s buffer for ACR data-plane token issuance cache..."
     sleep 15
 else
-    echo "AcrPull role assignment already present."
+    echo "AcrPull role assignment already confirmed present."
 fi
 
 # Link Container App to ACR using the System Identity (Zero passwords)
@@ -159,12 +178,12 @@ az containerapp update \
         PORT=3000 \
         TRUST_PROXY=1 \
         REEVA_ENABLE_YOUTUBE=true \
-        REEVA_ENABLE_INSTAGRAM=true \
-        REEVA_ENABLE_TIKTOK=true \
-        REEVA_ENABLE_FACEBOOK=true \
         REEVA_ENABLE_TWITTER=true \
         REEVA_ENABLE_PINTEREST=true \
         REEVA_ENABLE_GENERIC=true \
+        REEVA_ENABLE_INSTAGRAM=false \
+        REEVA_ENABLE_TIKTOK=false \
+        REEVA_ENABLE_FACEBOOK=false \
         REEVA_ENABLE_AUDIO_ONLY=true
 
 # ------------------------------------------------------------------------------
@@ -188,17 +207,29 @@ FQDN=$(az containerapp show \
 PUBLIC_URL="https://${FQDN}"
 echo "Public Application HTTPS URL: ${PUBLIC_URL}"
 
-echo "Waiting 10 seconds for initial container spin-up and readiness..."
-sleep 10
-
-echo "Testing /health endpoint..."
-curl -sS -i "${PUBLIC_URL}/health" || echo "Health probe connection pending."
+echo "Polling application readiness probe (/ready)..."
+READY=false
+for i in {1..12}; do
+    STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${PUBLIC_URL}/ready" || echo "000")
+    if [ "$STATUS_CODE" -eq 200 ]; then
+        echo "Application reported HTTP 200 (READY) on attempt $i."
+        READY=true
+        break
+    else
+        echo "Waiting for application startup preflight (HTTP ${STATUS_CODE}, attempt $i/12)..."
+        sleep 5
+    fi
+done
 
 echo ""
-echo "Testing /ready endpoint..."
-curl -sS -i "${PUBLIC_URL}/ready" || echo "Ready probe connection pending."
-
+echo "Verifying Liveness Probe (/health):"
+curl -sS "${PUBLIC_URL}/health" || echo "Health probe failed"
 echo ""
+
+echo "Verifying Readiness Probe (/ready):"
+curl -sS "${PUBLIC_URL}/ready" || echo "Ready probe failed"
+echo ""
+
 echo "Fetching recent application container logs..."
 az containerapp logs show \
     --name "${APP_NAME}" \
@@ -207,6 +238,11 @@ az containerapp logs show \
 
 echo ""
 echo "=================================================================="
-echo " Deployment Complete!"
-echo " Mobile Test URL: ${PUBLIC_URL}"
+if [ "$READY" = true ]; then
+    echo " Deployment Succeeded & Ready for Testing!"
+    echo " Mobile Test URL: ${PUBLIC_URL}"
+else
+    echo " Deployment completed but /ready returned non-200. Inspect logs above."
+    echo " Mobile Test URL: ${PUBLIC_URL}"
+fi
 echo "=================================================================="
