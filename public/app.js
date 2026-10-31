@@ -75,12 +75,29 @@ function createAppController(options = {}) {
     state.setLanguage(initialLang);
     ui.applyTranslations(initialLang, t, i18n.getLanguageDirection);
 
+    // =========================================================================
+    // 0. Interactive Anime Companion Initialization
+    // =========================================================================
+    let companion = null;
+    const companionLib = (win && win.ReevaCompanion) || (typeof ReevaCompanion !== "undefined" ? ReevaCompanion : null);
+    if (companionLib && typeof companionLib.initCompanion === "function") {
+        companion = companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
+        if (companion) {
+            setTimeout(() => {
+                companion.triggerState(companionLib.STATES.WELCOME, 4000);
+            }, 600);
+        }
+    }
+
     if (elements.langSelect) {
         elements.langSelect.addEventListener("change", (e) => {
             const selectedLang = e.target.value;
             const safeLang = i18n.resolveLanguage(selectedLang, i18n.SUPPORTED_LANGUAGES, i18n.DEFAULT_LANGUAGE);
 
             state.setLanguage(safeLang);
+            if (companion) {
+                companion.setLanguage(safeLang);
+            }
             i18n.setStoredLanguage(
                 safeLang,
                 win && typeof win.localStorage !== "undefined" ? win.localStorage : (typeof localStorage !== "undefined" ? localStorage : null)
@@ -139,6 +156,9 @@ function createAppController(options = {}) {
                 }
 
                 ui.setActivePlatform(targetPlatform);
+                if (companion && companionLib) {
+                    companion.triggerState(companionLib.STATES.PLATFORM_SELECTED, 3500);
+                }
 
                 if (elements.getBtn && !isRequestInProgress) {
                     elements.getBtn.disabled = false;
@@ -366,6 +386,9 @@ function createAppController(options = {}) {
         // 4. URL input validation
         const rawUrl = ui.getUrlInput();
         if (!rawUrl) {
+            if (companion && companionLib) {
+                companion.triggerState(companionLib.STATES.INVALID_URL, 4200);
+            }
             ui.setLog(t("status.empty_url", {}, currentLang), "error");
             return;
         }
@@ -390,6 +413,9 @@ function createAppController(options = {}) {
         // Transition UI to loading state
         state.setStatus("loading");
         state.clearMediaUrls();
+        if (companion && companionLib) {
+            companion.triggerState(companionLib.STATES.PROCESSING);
+        }
         ui.setLoading(true, t("status.fetching", {}, currentLang));
         ui.hidePreview();
         if (typeof ui.hideEmbed === "function") {
@@ -435,6 +461,9 @@ function createAppController(options = {}) {
 
                         if (embedResult.success && embedResult.embed && typeof ui.showEmbed === "function") {
                             state.setStatus("success");
+                            if (companion && companionLib) {
+                                companion.triggerState(companionLib.STATES.SUCCESS, 5000);
+                            }
                             state.clearMediaUrls();
                             ui.hidePreview();
                             ui.setDownloadButtonVisible(false);
@@ -446,6 +475,15 @@ function createAppController(options = {}) {
                 }
 
                 state.setStatus("error");
+                if (companion && companionLib) {
+                    if (result.code === "NETWORK_ERROR") {
+                        companion.triggerState(companionLib.STATES.NETWORK_ERROR, 4500);
+                    } else if (result.code === "INVALID_URL" || result.code === "DISALLOWED_DOMAIN") {
+                        companion.triggerState(companionLib.STATES.INVALID_URL, 4500);
+                    } else {
+                        companion.triggerState(companionLib.STATES.FAILURE, 5500);
+                    }
+                }
                 const errorMessage = result.code === "NETWORK_ERROR"
                     ? t("status.network_error", { message: result.message }, renderLang)
                     : `❌ ${result.message || t("status.generic_error", {}, renderLang)}`;
@@ -455,6 +493,9 @@ function createAppController(options = {}) {
 
             if (!result.streamUrl) {
                 state.setStatus("error");
+                if (companion && companionLib) {
+                    companion.triggerState(companionLib.STATES.FAILURE, 5500);
+                }
                 ui.setLog(t("status.not_found", {}, renderLang), "error");
                 return;
             }
@@ -462,12 +503,18 @@ function createAppController(options = {}) {
             // Media URL security validation
             if (!api.isValidMediaUrl(result.streamUrl)) {
                 state.setStatus("error");
+                if (companion && companionLib) {
+                    companion.triggerState(companionLib.STATES.FAILURE, 5500);
+                }
                 ui.setLog(`❌ ${t("status.generic_error", {}, renderLang)}`, "error");
                 return;
             }
 
             // Success state transition
             state.setStatus("success");
+            if (companion && companionLib) {
+                companion.triggerState(companionLib.STATES.SUCCESS, 5000);
+            }
             state.setMediaUrls({
                 streamUrl: result.streamUrl,
                 downloadUrl: result.downloadUrl
@@ -485,6 +532,9 @@ function createAppController(options = {}) {
                 return;
             }
             state.setStatus("error");
+            if (companion && companionLib) {
+                companion.triggerState(companionLib.STATES.NETWORK_ERROR, 4500);
+            }
             const renderLang = state.getLanguage();
             ui.setLog(t("status.network_error", { message: err.message || "Unknown error" }, renderLang), "error");
         } finally {
@@ -505,6 +555,11 @@ function createAppController(options = {}) {
     }
 
     if (elements.urlIn) {
+        elements.urlIn.addEventListener("focus", () => {
+            if (companion && companionLib && state.getStatus() === "idle") {
+                companion.triggerState(companionLib.STATES.CURIOUS, 3500);
+            }
+        });
         elements.urlIn.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 e.preventDefault();
@@ -538,6 +593,7 @@ function createAppController(options = {}) {
         capabilitiesPromise,
         getCapabilitiesLoaded: () => capabilitiesLoaded,
         getVerifiedPlatforms: () => verifiedPlatforms,
+        getCompanion: () => companion,
         elements,
         state,
         ui
@@ -546,7 +602,10 @@ function createAppController(options = {}) {
 
 if (typeof document !== "undefined" && document.addEventListener) {
     document.addEventListener("DOMContentLoaded", () => {
-        createAppController();
+        const app = createAppController();
+        if (typeof window !== "undefined") {
+            window.__reevaApp = app;
+        }
     });
 }
 

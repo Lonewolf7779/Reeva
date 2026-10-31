@@ -35,6 +35,7 @@ Thumbs.db
 # Auto-generated / runtime files
 public/js/generated/
 *.min.js
+!public/js/anime.min.js
 17612334*.js
 *.cache.js
 *.map

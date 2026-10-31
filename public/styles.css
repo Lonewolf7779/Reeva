@@ -208,62 +208,157 @@ a:hover {
 }
 
 /* ==========================================================================
-   2.5 Anime Background Artwork & Smooth Keyframe Animations
+   2.5 Interactive Anime Companion System (.companion-dock-wrapper)
    ========================================================================== */
-.anime-bg-canvas {
+#anime-companion-root {
     position: fixed;
-    top: 0;
-    left: 0;
+    bottom: 14px;
+    right: 12px;
+    z-index: 999;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.companion-dock-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    pointer-events: none;
+}
+
+.companion-character-avatar {
+    width: 95px;
+    height: 114px;
+    pointer-events: auto;
+    cursor: pointer;
+    user-select: none;
+    filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.08));
+    animation: companionBreath 4.4s ease-in-out infinite;
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    transform-origin: bottom center;
+}
+
+.companion-character-avatar:hover {
+    transform: scale(1.04) translateY(-2px);
+}
+
+.companion-character-avatar svg {
     width: 100%;
     height: 100%;
-    pointer-events: none;
-    z-index: 0;
-    overflow: hidden;
-    user-select: none;
+    display: block;
+    overflow: visible;
 }
 
-.anime-character {
+/* Variant state switcher helper */
+.comp-variant-hidden {
+    display: none !important;
+}
+
+/* Floating Contextual Speech Bubble */
+.companion-speech-bubble {
+    background: var(--bg-surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-color);
+    border-radius: 14px 14px 2px 14px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.09);
+    padding: 10px 14px;
+    max-width: 250px;
+    font-size: 0.84rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+    pointer-events: auto;
+    position: relative;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    transform-origin: bottom right;
+}
+
+.companion-speech-bubble::after {
+    content: '';
     position: absolute;
-    bottom: 0;
-    background-size: contain;
-    background-repeat: no-repeat;
-    pointer-events: none;
-    will-change: transform, opacity;
-    animation: animeReveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    bottom: -6px;
+    right: 18px;
+    width: 10px;
+    height: 6px;
+    background: var(--bg-surface);
+    clip-path: polygon(0 0, 100% 0, 50% 100%);
+    border-top: 1px solid var(--border-color);
 }
 
-.anime-character-right {
-    right: -25px;
-    bottom: 20px;
-    width: clamp(260px, 68vw, 420px);
-    height: clamp(340px, 88vw, 560px);
-    background-image: url('/images/character-hero.webp');
-    background-position: bottom right;
-    opacity: 0.52;
-    mask-image: radial-gradient(circle at 75% 65%, black 40%, transparent 88%),
-                linear-gradient(to top, black 25%, transparent 95%);
-    -webkit-mask-image: radial-gradient(circle at 75% 65%, black 40%, transparent 88%),
-                        linear-gradient(to top, black 25%, transparent 95%);
+.companion-speech-text {
+    flex: 1;
+    font-weight: 400;
+    margin: 0;
 }
 
-.anime-character-left {
-    left: -15px;
-    bottom: 0;
-    width: clamp(210px, 46vw, 340px);
-    height: clamp(290px, 62vw, 460px);
-    background-image: url('/images/character-secondary.webp');
-    background-position: bottom left;
-    opacity: 0.22;
-    mask-image: radial-gradient(circle at 25% 70%, black 35%, transparent 88%),
-                linear-gradient(to top, black 25%, transparent 95%);
-    -webkit-mask-image: radial-gradient(circle at 25% 70%, black 35%, transparent 88%),
-                        linear-gradient(to top, black 25%, transparent 95%);
-    display: none; /* On narrow mobile, hero character provides focused elegance; activates on desktop/tablet */
+.companion-speech-close {
+    background: transparent;
+    border: none;
+    font-size: 1.1rem;
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 2px;
+    transition: color 0.15s ease;
 }
 
-[data-theme="dark"] .anime-character {
-    filter: invert(0.92) hue-rotate(180deg) brightness(0.9) contrast(1.1);
-    opacity: 0.16;
+.companion-speech-close:hover {
+    color: var(--text-primary);
+}
+
+/* Animations */
+@keyframes companionBreath {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-3px);
+    }
+}
+
+.bubble-enter {
+    animation: bubblePop 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.bubble-exit {
+    animation: bubbleFade 0.22s ease-in forwards;
+}
+
+@keyframes bubblePop {
+    0% {
+        opacity: 0;
+        transform: scale(0.85) translateY(10px);
+    }
+    100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes bubbleFade {
+    0% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    100% {
+        opacity: 0;
+        transform: scale(0.9) translateY(6px);
+    }
+}
+
+.anim-bounce {
+    animation: compBounce 0.65s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes compBounce {
+    0%, 100% { transform: translateY(0); }
+    35% { transform: translateY(-20px) scale(1.05); }
+    70% { transform: translateY(0) scale(0.98); }
 }
 
 /* Smooth Entrance Keyframe Animations */
@@ -275,17 +370,6 @@ a:hover {
     100% {
         opacity: 1;
         transform: translateY(0);
-    }
-}
-
-@keyframes animeReveal {
-    0% {
-        opacity: 0;
-        transform: translateY(22px) scale(0.98);
-    }
-    100% {
-        opacity: var(--art-opacity, 0.44);
-        transform: translateY(0) scale(1);
     }
 }
 
@@ -1401,6 +1485,22 @@ footer, .site-footer {
     .specs-grid {
         grid-template-columns: repeat(2, 1fr);
     }
+
+    /* Tablet Companion Positioning */
+    #anime-companion-root {
+        bottom: 22px;
+        right: 24px;
+    }
+
+    .companion-character-avatar {
+        width: 120px;
+        height: 144px;
+    }
+
+    .companion-speech-bubble {
+        max-width: 290px;
+        font-size: 0.88rem;
+    }
 }
 
 /* Desktop (1024px and above) — Preserves 100% Approved Design */
@@ -1433,22 +1533,20 @@ footer, .site-footer {
         max-width: 620px;
     }
 
-    /* Desktop Anime Artwork positioning: Subtle in wide margin corners */
-    .anime-character-right {
-        right: 2%;
-        bottom: 0;
-        width: 320px;
-        height: 440px;
-        opacity: 0.20;
+    /* Desktop Companion Positioning */
+    #anime-companion-root {
+        bottom: 28px;
+        right: 36px;
     }
 
-    .anime-character-left {
-        display: block;
-        left: 2%;
-        bottom: 0;
-        width: 300px;
-        height: 410px;
-        opacity: 0.16;
+    .companion-character-avatar {
+        width: 140px;
+        height: 168px;
+    }
+
+    .companion-speech-bubble {
+        max-width: 320px;
+        font-size: 0.9rem;
     }
 
     .supporting-grid {
