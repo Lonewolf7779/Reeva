@@ -68,6 +68,11 @@
             return true;
         }
 
+        function clearPlatform() {
+            currentPlatform = null;
+            notify();
+        }
+
         function getPlatform() {
             return currentPlatform;
         }
@@ -154,6 +159,7 @@
             getState,
             getPlatform,
             setPlatform,
+            clearPlatform,
             getStatus,
             setStatus,
             setMediaUrls,

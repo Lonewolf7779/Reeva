@@ -1,0 +1,172 @@
+name: Build and Push to Azure Container Registry
+
+on:
+  push:
+    branches:
+      - phase-4.2-production-platform-gates
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to apply (default: mobile-test)"
+        required: true
+        default: "mobile-test"
+        type: string
+      run_tests:
+        description: "Run automated test suite before container build"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: "reeva-rg"
+  ACR_NAME: "reevaacr20261031"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
+  IMAGE_NAME: "reeva"
+  TARGET_ARCH: "amd64"
+
+jobs:
+  build-and-push:
+    name: Build & Push Image to ACR (linux/amd64 via OIDC)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify runner architecture (x86-64 / amd64)
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          echo "Host runner architecture: ${ARCH}"
+          if [ "${ARCH}" != "x86_64" ]; then
+            echo "ERROR: Reeva container build requires x86_64 (amd64) host, but runner is '${ARCH}'." >&2
+            exit 1
+          fi
+
+      - name: Validate image tag input
+        env:
+          RAW_TAG: ${{ inputs.image_tag || 'mobile-test' }}
+        run: |
+          set -euo pipefail
+          # Enforce official Docker image tag specification:
+          # Must be 1-128 chars, composed of [a-zA-Z0-9_.-], and cannot begin with '.' or '-'
+          if ! [[ "${RAW_TAG}" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+            echo "ERROR: Invalid Docker image tag '${RAW_TAG}'." >&2
+            echo "Docker tag must be 1-128 alphanumeric characters (including '.', '_', '-'), and cannot start with '.' or '-'." >&2
+            exit 1
+          fi
+          FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${RAW_TAG}"
+          echo "VALIDATED_TAG=${RAW_TAG}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
+          echo "Target Docker image tag validated: ${RAW_TAG}"
+          echo "Full target image reference: ${FULL_IMAGE}"
+
+      - name: Verify root Dockerfile exists
+        run: |
+          set -euo pipefail
+          if [ ! -f "Dockerfile" ]; then
+            echo "ERROR: Root Dockerfile not found in repository." >&2
+            exit 1
+          fi
+          echo "Confirmed: root Dockerfile is present."
+
+      - name: Setup Node.js 24 LTS (Pre-build Verification)
+        if: ${{ github.event_name == 'push' || inputs.run_tests == true }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Run test suite before build
+        if: ${{ github.event_name == 'push' || inputs.run_tests == true }}
+        run: |
+          set -euo pipefail
+          echo "Verifying lockfile and installing dependencies..."
+          npm ci
+          echo "Executing test suite on Node.js 24..."
+          node scripts/run-tests.cjs
+
+      - name: Authenticate to Azure via OpenID Connect (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Discover and Authenticate to Azure Container Registry
+        run: |
+          set -euo pipefail
+          echo "Discovering Azure Container Registry metadata for '${ACR_NAME}' in resource group '${RESOURCE_GROUP}'..."
+
+          DISCOVERED_LOGIN_SERVER=""
+          if ! DISCOVERED_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query loginServer -o tsv 2>acr_show_err.log); then
+            echo "::error::Failed to query registry metadata via Azure Resource Manager." >&2
+            cat acr_show_err.log >&2
+            echo "" >&2
+            echo "DIAGNOSTIC & REMEDIATION:" >&2
+            echo "The managed identity (reeva-gh-actions-identity) requires the 'Reader' role assigned at the registry scope" >&2
+            echo "(or resource group scope '${RESOURCE_GROUP}') in addition to 'AcrPush'." >&2
+            echo "Without ARM read permissions (Microsoft.ContainerRegistry/registries/read), Azure CLI cannot resolve" >&2
+            echo "the partitioned login server '${ACR_LOGIN_SERVER}' and will fail authentication." >&2
+            exit 1
+          fi
+
+          echo "Discovered ACR login server: '${DISCOVERED_LOGIN_SERVER}'"
+          echo "Expected ACR login server:   '${ACR_LOGIN_SERVER}'"
+
+          if [ "${DISCOVERED_LOGIN_SERVER}" != "${ACR_LOGIN_SERVER}" ]; then
+            echo "::error::Registry login server mismatch!" >&2
+            echo "Expected: '${ACR_LOGIN_SERVER}', but Azure returned: '${DISCOVERED_LOGIN_SERVER}'." >&2
+            exit 1
+          fi
+
+          echo "Confirmed: login server matches expected configuration."
+          echo "Logging into Azure Container Registry '${ACR_NAME}' via Azure CLI..."
+          az acr login --name "${ACR_NAME}"
+
+      - name: Build production container image (linux/amd64)
+        run: |
+          set -euo pipefail
+          echo "Building Docker image: ${FULL_IMAGE} for platform linux/amd64..."
+          docker build \
+            --platform=linux/amd64 \
+            -t "${FULL_IMAGE}" \
+            .
+          echo "Image build complete."
+          docker images "${FULL_IMAGE}"
+
+      - name: Push image to Azure Container Registry
+        run: |
+          set -euo pipefail
+          echo "Pushing ${FULL_IMAGE} to ACR..."
+          docker push "${FULL_IMAGE}"
+          echo "Docker push succeeded."
+
+      - name: Generate deployment summary
+        if: always()
+        run: |
+          cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Container Registry Build & Push Summary
+
+          * **Trigger Event:** \`${{ github.event_name }}\`
+          * **Registry Login Server:** \`${ACR_LOGIN_SERVER}\`
+          * **Image:** \`${IMAGE_NAME}\`
+          * **Tag:** \`${VALIDATED_TAG:-${{ inputs.image_tag || 'mobile-test' }}}\`
+          * **Full Image Reference:** \`${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}\`
+          * **Target Architecture:** \`linux/amd64\`
+          * **Authentication Method:** Azure OIDC (Passwordless Federated Identity)
+
+          ### Next Step: Azure Container App Deployment
+          Deploy this container image to your Azure Container App using:
+          \`\`\`bash
+          az containerapp update \\
+            --name <container-app-name> \\
+            --resource-group reeva-rg \\
+            --image ${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}
+          \`\`\`
+          EOF

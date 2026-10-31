@@ -115,6 +115,9 @@ test("TikTok Error Mapping: Normalizes bot challenge, timeout, and private video
     const botErr = mapTikTokYtDlpError(new Error("Sign in to confirm you're not a bot"));
     assert.equal(botErr.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
 
+    const challengeErr = mapTikTokYtDlpError(new Error("Unexpected response from webpage request"));
+    assert.equal(challengeErr.code, EXTRACTION_ERROR_CODES.PLATFORM_CHALLENGE);
+
     const privErr = mapTikTokYtDlpError(new Error("This video is private"));
     assert.equal(privErr.code, EXTRACTION_ERROR_CODES.PRIVATE_CONTENT);
 

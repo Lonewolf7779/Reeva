@@ -5,60 +5,321 @@
     <meta charset="utf-8" />
     <title>Reeva — Universal Reel Downloader</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Fast, clean, and secure media downloader for public content from supported platforms." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="Reeva — Universal Reel Downloader" />
+    <meta property="og:description" content="Fast, clean, and secure media downloader for public content from supported platforms." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Reeva — Universal Reel Downloader" />
+    <meta name="twitter:description" content="Fast, clean, and secure media downloader for public content from supported platforms." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
 </head>
 
 <body>
-    <div class="card">
-        <div class="lang-bar">
-            <label id="lang-label" for="lang-select" class="lang-label">Language:</label>
-            <select id="lang-select" class="lang-select" aria-labelledby="lang-label">
-                <option value="en">English</option>
-                <option value="hi">हिन्दी (Hindi)</option>
-            </select>
+    <div class="app-container card">
+        <!-- Site Header & Navigation -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
+
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/how-to-use.html" class="nav-link">How to Use</a>
+                <a href="/platforms.html" class="nav-link">Platforms</a>
+                <a href="/faq.html" class="nav-link">FAQ</a>
+                <a href="/about.html" class="nav-link">About</a>
+            </nav>
+
+            <div class="header-controls">
+                <div class="lang-bar">
+                    <label id="lang-label" for="lang-select" class="lang-label">Language:</label>
+                    <select id="lang-select" class="lang-select" aria-labelledby="lang-label">
+                        <option value="en">English</option>
+                        <option value="hi">हिन्दी (Hindi)</option>
+                    </select>
+                </div>
+                <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Toggle visual theme" title="Toggle theme">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="5"></circle>
+                        <line x1="12" y1="1" x2="12" y2="3"></line>
+                        <line x1="12" y1="21" x2="12" y2="23"></line>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                        <line x1="1" y1="12" x2="3" y2="12"></line>
+                        <line x1="21" y1="12" x2="23" y2="12"></line>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Work Area -->
+        <main class="main-content">
+            <div class="workspace-layout">
+                <!-- Left Column: Downloader Core & Results -->
+                <div class="workspace-main-column">
+                    <!-- Downloader Centerpiece Widget -->
+                    <section class="widget-card downloader-widget" aria-labelledby="app-heading">
+                <div class="hero-meta">
+                    <span class="hero-tag">Direct Media Utility</span>
+                    <h1 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h1>
+                    <p id="app-subtitle">Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+                </div>
+
+                <!-- Platform Selector Widget -->
+                <div class="platform-section">
+                    <span class="section-label">Supported Platforms</span>
+                    <div id="platforms" class="platform-icon-grid" role="group" aria-label="Supported platforms">
+                        <button class="platform-btn disabled" data-platform="youtube" type="button" disabled aria-disabled="true" aria-label="YouTube" title="YouTube">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                            </svg>
+                            <span class="sr-only platform-label">YouTube</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="instagram" type="button" disabled aria-disabled="true" aria-label="Instagram" title="Instagram">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                            </svg>
+                            <span class="sr-only platform-label">Instagram</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="facebook" type="button" disabled aria-disabled="true" aria-label="Facebook" title="Facebook">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                            </svg>
+                            <span class="sr-only platform-label">Facebook</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="tiktok" type="button" disabled aria-disabled="true" aria-label="TikTok" title="TikTok">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M19.589 6.686a4.793 4.793 0 0 1-3.77-4.245V2h-3.445v13.672a2.896 2.896 0 0 1-5.201 1.743l-.068-.098a2.899 2.899 0 0 1 2.373-4.542c.318 0 .626.052.915.149V9.379a6.34 6.34 0 0 0-.915-.067 6.344 6.344 0 0 0-6.344 6.344 6.344 6.344 0 0 0 6.344 6.344 6.335 6.335 0 0 0 6.344-6.344V8.756a8.214 8.214 0 0 0 4.767 1.497V6.808a4.832 4.832 0 0 1-1-.122z"/>
+                            </svg>
+                            <span class="sr-only platform-label">TikTok</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="twitter" type="button" disabled aria-disabled="true" aria-label="Twitter (X)" title="Twitter (X)">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                            </svg>
+                            <span class="sr-only platform-label">Twitter (X)</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="pinterest" type="button" disabled aria-disabled="true" aria-label="Pinterest" title="Pinterest">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M12 0C5.373 0 0 5.372 0 12c0 5.084 3.163 9.426 7.627 11.174-.105-.949-.2-2.405.042-3.441.218-.937 1.407-5.965 1.407-5.965s-.359-.719-.359-1.782c0-1.668.967-2.914 2.171-2.914 1.023 0 1.518.769 1.518 1.69 0 1.029-.655 2.568-.994 3.995-.283 1.194.599 2.169 1.777 2.169 2.133 0 3.772-2.249 3.772-5.495 0-2.873-2.064-4.882-5.012-4.882-3.414 0-5.418 2.561-5.418 5.207 0 1.031.397 2.138.893 2.738a.36.36 0 0 1 .083.345l-.333 1.36c-.053.22-.174.267-.402.161-1.499-.698-2.436-2.889-2.436-4.649 0-3.785 2.75-7.262 7.929-7.262 4.163 0 7.398 2.967 7.398 6.931 0 4.136-2.607 7.464-6.227 7.464-1.216 0-2.359-.631-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24 12 24c6.627 0 12-5.373 12-12 0-6.628-5.373-12-12-12z"/>
+                            </svg>
+                            <span class="sr-only platform-label">Pinterest</span>
+                        </button>
+                        <button class="platform-btn disabled" data-platform="generic" type="button" disabled aria-disabled="true" aria-label="More Sites" title="More Sites">
+                            <svg viewBox="0 0 24 24" class="platform-icon" aria-hidden="true" fill="currentColor">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+                            </svg>
+                            <span class="sr-only platform-label">More Sites</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Input & Actions Widget -->
+                <div class="input-section">
+                    <p class="instruction" id="input-instruction">Paste your link below and click Get.</p>
+                    <div class="input-box-wrapper">
+                        <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" aria-label="Video URL" />
+                        <div class="row action-row">
+                            <button id="get" class="action" type="button" disabled aria-disabled="true">Get</button>
+                            <button id="download" class="action hidden" type="button" aria-hidden="true">Download</button>
+                        </div>
+                    </div>
+
+                    <!-- Consent Confirmation -->
+                    <label id="consent-label" class="consent-row">
+                        <input id="consent" type="checkbox">
+                        <span id="consent-text">I confirm I own or have permission to download this content.</span>
+                        <a id="why-consent" class="small" href="#">Why?</a>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Results & Output Widget -->
+            <section class="widget-card results-widget" aria-label="Media results and status">
+                <div id="log" role="status" aria-live="polite"></div>
+                <video id="preview" controls class="hidden" aria-label="Media preview"></video>
+                <div id="embed-container" class="hidden" aria-label="Embedded media player"></div>
+            </section>
         </div>
 
-        <h2 id="app-heading">Reeva — Smart, simple, and lightning-fast downloader</h2>
-        <p id="app-subtitle">Reeva helps you save public videos from your favorite platforms in seconds — fast, clean, and secure.</p>
+        <!-- Right Column (Desktop) / Companion Stage (Mobile): Dedicated Visual Novel Companion -->
+        <aside id="companion-stage" class="widget-card companion-stage" aria-label="Reeva Anime Companion">
+            <div class="companion-stage-header">
+                <div class="companion-identity">
+                    <span class="companion-pulse-dot" aria-hidden="true"></span>
+                    <span class="companion-name">Reeva</span>
+                    <span class="companion-role-badge">Companion</span>
+                </div>
+                <div class="companion-mood">
+                    <span id="companion-mood-tag" class="companion-mood-tag">Ready</span>
+                </div>
+            </div>
 
-        <!-- Platform Selector -->
-        <div id="platforms">
-            <button class="platform-btn active" data-platform="instagram" type="button">Instagram</button>
-            <button class="platform-btn" data-platform="facebook" type="button">Facebook</button>
-            <button class="platform-btn" data-platform="twitter" type="button">Twitter (X)</button>
-            <button class="platform-btn" data-platform="pinterest" type="button">Pinterest</button>
-            <button class="platform-btn" data-platform="youtube" type="button">YouTube</button>
-            <button class="platform-btn" data-platform="tiktok" type="button">TikTok</button>
-            <button class="platform-btn" data-platform="generic" type="button">More Sites</button>
-        </div>
+            <!-- Visual Novel Speech Dialogue Box -->
+            <div id="companion-dialogue" class="companion-dialogue-card" role="status" aria-live="polite">
+                <div class="companion-dialogue-header">
+                    <span class="companion-speaker-label">Reeva</span>
+                    <button id="companion-dialogue-close" class="companion-dialogue-close-btn" type="button" aria-label="Dismiss message">&times;</button>
+                </div>
+                <p id="companion-dialogue-text" class="companion-dialogue-text">Hey there! Ready to download your favorite media?</p>
+            </div>
 
-        <p class="instruction" id="input-instruction">Paste your link below and click Get.</p>
-        <input id="url" type="text" placeholder="Paste your video link here..." autocomplete="off" spellcheck="false" aria-label="Video URL" />
+            <!-- Character Portrait Frame -->
+            <div class="companion-portrait-frame">
+                <div id="anime-companion-root" class="companion-character-wrap" aria-label="Reeva Visual Novel Character">
+                    <div id="comp-sprite-container" class="companion-sprite-container">
+                        <img id="comp-expr-happy" class="comp-expr-img" src="/img/companion/expressions/happy.png" alt="Reeva Happy" />
+                        <img id="comp-expr-smiling" class="comp-expr-img hidden" src="/img/companion/expressions/smiling.png" alt="Reeva Smiling" />
+                        <img id="comp-expr-excited" class="comp-expr-img hidden" src="/img/companion/expressions/excited.png" alt="Reeva Excited" />
+                        <img id="comp-expr-curious" class="comp-expr-img hidden" src="/img/companion/expressions/curious.png" alt="Reeva Curious" />
+                        <img id="comp-expr-focused" class="comp-expr-img hidden" src="/img/companion/expressions/focused.png" alt="Reeva Focused" />
+                        <img id="comp-expr-surprised" class="comp-expr-img hidden" src="/img/companion/expressions/surprised.png" alt="Reeva Surprised" />
+                        <img id="comp-expr-confused" class="comp-expr-img hidden" src="/img/companion/expressions/confused.png" alt="Reeva Confused" />
+                        <img id="comp-expr-disappointed" class="comp-expr-img hidden" src="/img/companion/expressions/disappointed.png" alt="Reeva Disappointed" />
+                        <img id="comp-expr-crying" class="comp-expr-img hidden" src="/img/companion/expressions/crying.png" alt="Reeva Crying" />
+                        <img id="comp-expr-celebrating" class="comp-expr-img hidden" src="/img/companion/expressions/celebrating.png" alt="Reeva Celebrating" />
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
 
-        <div class="row">
-            <button id="get" class="action" type="button">Get</button>
-            <button id="download" class="action hidden" type="button" aria-hidden="true">Download</button>
-        </div>
+            <!-- Supporting Information Grid -->
+            <div class="supporting-grid">
+                <!-- How It Works Module -->
+                <section class="widget-card" aria-labelledby="how-it-works-title">
+                    <span class="section-label">Workflow</span>
+                    <h2 id="how-it-works-title" class="widget-heading">How Reeva Works</h2>
+                    <div class="steps-list">
+                        <div class="step-item">
+                            <span class="step-num">01</span>
+                            <div class="step-content">
+                                <h3>Paste Public Link</h3>
+                                <p>Provide a public video or reel URL from any supported network.</p>
+                            </div>
+                        </div>
+                        <div class="step-item">
+                            <span class="step-num">02</span>
+                            <div class="step-content">
+                                <h3>Validate & Extract</h3>
+                                <p>Our hardened backend analyzes headers, streams, and resolves high-quality media.</p>
+                            </div>
+                        </div>
+                        <div class="step-item">
+                            <span class="step-num">03</span>
+                            <div class="step-content">
+                                <h3>Preview & Download</h3>
+                                <p>Inspect your media in the native player and save it directly to your device.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
 
-        <label id="consent-label">
-            <input id="consent" type="checkbox">
-            <span id="consent-text">I confirm I own or have permission to download this content.</span>
-            <a id="why-consent" class="small" href="#">Why?</a>
-        </label>
+                <!-- Technical & Security Specifications Module -->
+                <section class="widget-card" aria-labelledby="system-specs-title">
+                    <span class="section-label">Engineering Specifications</span>
+                    <h2 id="system-specs-title" class="widget-heading">Architecture & Security</h2>
+                    <div class="specs-grid">
+                        <div class="spec-item">
+                            <div class="spec-title">Strict TLS Verification</div>
+                            <div class="spec-desc">Zero man-in-the-middle bypasses. Validates official platform certificates end-to-end.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Anti-SSRF Protections</div>
+                            <div class="spec-desc">DNS-pinned socket requests strictly prohibiting access to internal or private IP ranges.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Ephemeral Scratch Storage</div>
+                            <div class="spec-desc">No media persistence. Files are automatically deleted after 10 minutes by a background daemon.</div>
+                        </div>
+                        <div class="spec-item">
+                            <div class="spec-title">Sandboxed Fallback Player</div>
+                            <div class="spec-desc">Restricted iframe sandbox when platform policies enforce official embed rendering.</div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            <!-- Reserved Advertisement Container (AdSense Readiness) -->
+            <aside class="ad-slot-editorial" aria-label="Sponsor Area">
+                <span class="ad-slot-label">Editorial Information Area</span>
+                <span class="ad-slot-placeholder">Reserved editorial sponsorship space &mdash; strictly separated from downloader controls</span>
+            </aside>
+        </main>
 
-        <div id="log" role="status" aria-live="polite"></div>
-        <video id="preview" controls class="hidden" aria-label="Media preview"></video>
+        <!-- Site Footer -->
+        <footer class="site-footer">
+            <div class="footer-nav-grid">
+                <div class="footer-col">
+                    <h4>Product</h4>
+                    <ul>
+                        <li><a href="/">Media Downloader</a></li>
+                        <li><a href="/how-to-use.html">How to Use</a></li>
+                        <li><a href="/platforms.html">Supported Platforms</a></li>
+                        <li><a href="/faq.html">Frequently Asked Questions</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Architecture</h4>
+                    <ul>
+                        <li><a href="/platforms.html#capabilities">Platform Capabilities</a></li>
+                        <li><a href="/about.html#security">Security Architecture</a></li>
+                        <li><a href="/about.html#storage">Scratch Storage Lifecycle</a></li>
+                        <li><a href="/about.html#tls">TLS & SSRF Controls</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Company & Trust</h4>
+                    <ul>
+                        <li><a href="/about.html">About Reeva</a></li>
+                        <li><a href="/contact.html">Contact Us</a></li>
+                        <li><a href="https://github.com/Lonewolf7779/Reeva" target="_blank" rel="noopener noreferrer">GitHub Repository</a></li>
+                        <li><a href="/copyright.html">DMCA / Takedown Policy</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Legal & Privacy</h4>
+                    <ul>
+                        <li><a href="/privacy.html">Privacy Policy</a></li>
+                        <li><a href="/terms.html">Terms of Service</a></li>
+                        <li><a href="/copyright.html#complaints">Copyright Complaints</a></li>
+                        <li><a href="/privacy.html#operator">Operator Contact</a></li>
+                    </ul>
+                </div>
+            </div>
 
-        <footer>
-            <span id="footer-disclaimer">Disclaimer: This tool is for personal and educational use only.</span><br>
-            <span id="footer-copyright">We never store or host media. All rights belong to their respective owners.</span>
+            <div class="footer-bottom">
+                <div class="footer-links">
+                    <a href="/privacy.html" class="footer-link" id="link-privacy">Privacy Policy</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/terms.html" class="footer-link" id="link-terms">Terms of Service</a>
+                </div>
+                <div class="footer-copy">
+                    <span id="footer-disclaimer">Disclaimer: This tool is for personal and educational use only.</span>
+                    <span id="footer-copyright">We never store or host media. All rights belong to their respective owners.</span>
+                </div>
+            </div>
         </footer>
     </div>
 
+    <!-- Application Scripts -->
     <script src="/js/i18n.js" defer></script>
     <script src="/js/state.js" defer></script>
     <script src="/js/api.js" defer></script>
     <script src="/js/ui.js" defer></script>
+    <script src="/js/anime.min.js" defer></script>
+    <script src="/js/companion.js" defer></script>
     <script src="/app.js" defer></script>
 </body>
 

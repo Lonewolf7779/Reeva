@@ -31,6 +31,7 @@ const { extractMedia, ExtractionError } = require("./lib/extraction/index.cjs");
 const { EXTRACTION_ERROR_CODES, DEFAULT_ERROR_MESSAGES } = require("./lib/extraction/types.cjs");
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
 const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
+const { resolveEmbed, EmbedError, SUPPORTED_EMBED_PLATFORMS } = require("./lib/embed/index.cjs");
 
 // Clean stale temporary media artifacts on server startup
 cleanStaleTempFiles().catch((err) => {
@@ -78,6 +79,7 @@ app.use(helmet({
             styleSrc: ["'self'"],
             imgSrc: ["'self'", "data:", "blob:"],
             mediaSrc: ["'self'", "blob:"],
+            frameSrc: ["'self'", "https://www.tiktok.com", "https://www.instagram.com", "https://www.facebook.com"],
             connectSrc: ["'self'"],
             frameAncestors: ["'none'"],
             objectSrc: ["'none'"],
@@ -417,7 +419,8 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
             sourceUrl: req.query.url,
             mode: req.query.mode,
             requestId: req.id,
-            signal: abortController.signal
+            signal: abortController.signal,
+            features: serverConfig.features
         });
 
         const { media } = extraction;
@@ -464,6 +467,84 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
         activeExtractionControllers.delete(abortController);
     }
 });
+
+/**
+ * Sniffs the magic bytes of a local media file to accurately determine its MIME type and extension.
+ * Defaults back to standard format based on mediaEntry.type if the container is unrecognized or unreadable.
+ *
+ * @param {string} filePath
+ * @param {string} [mediaType="video"]
+ * @returns {Promise<{ contentType: string, fileExt: string }>}
+ */
+async function sniffLocalMediaFormat(filePath, mediaType = "video") {
+    const isAudio = mediaType === "audio";
+    const isImage = mediaType === "image";
+
+    // Default fallbacks preserving existing behavior
+    let contentType = isImage ? "image/jpeg" : (isAudio ? "audio/mp4" : "video/mp4");
+    let fileExt = isImage ? "jpg" : (isAudio ? "m4a" : "mp4");
+
+    try {
+        const handle = await fs.promises.open(filePath, "r");
+        try {
+            const buf = Buffer.alloc(16);
+            const { bytesRead } = await handle.read(buf, 0, 16, 0);
+            if (bytesRead >= 4) {
+                // EBML (WebM / Matroska): 0x1A 0x45 0xDF 0xA3
+                if (buf[0] === 0x1A && buf[1] === 0x45 && buf[2] === 0xDF && buf[3] === 0xA3) {
+                    contentType = isAudio ? "audio/webm" : "video/webm";
+                    fileExt = "webm";
+                    return { contentType, fileExt };
+                }
+                // MP4 / M4A / QuickTime: bytes 4..7 === 'ftyp'
+                if (bytesRead >= 8 && buf.toString("ascii", 4, 8) === "ftyp") {
+                    contentType = isAudio ? "audio/mp4" : "video/mp4";
+                    fileExt = isAudio ? "m4a" : "mp4";
+                    return { contentType, fileExt };
+                }
+                // JPEG: 0xFF 0xD8 0xFF
+                if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) {
+                    contentType = "image/jpeg";
+                    fileExt = "jpg";
+                    return { contentType, fileExt };
+                }
+                // PNG: 0x89 0x50 0x4E 0x47
+                if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+                    contentType = "image/png";
+                    fileExt = "png";
+                    return { contentType, fileExt };
+                }
+                // GIF: 'GIF87a' or 'GIF89a'
+                if (buf.toString("ascii", 0, 3) === "GIF") {
+                    contentType = "image/gif";
+                    fileExt = "gif";
+                    return { contentType, fileExt };
+                }
+                // Ogg: 0x4F 0x67 0x67 0x53 ('OggS')
+                if (buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) {
+                    contentType = isAudio ? "audio/ogg" : "video/ogg";
+                    fileExt = isAudio ? "ogg" : "ogv";
+                    return { contentType, fileExt };
+                }
+                // MP3: 'ID3' or frame sync 0xFF 0xFB / 0xF3 / 0xF2
+                if (
+                    (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) ||
+                    (buf[0] === 0xFF && (buf[1] & 0xE0) === 0xE0)
+                ) {
+                    contentType = "audio/mpeg";
+                    fileExt = "mp3";
+                    return { contentType, fileExt };
+                }
+            }
+        } finally {
+            await handle.close();
+        }
+    } catch (_) {
+        // Fall back to mediaEntry defaults
+    }
+
+    return { contentType, fileExt };
+}
 
 // ================== AUTHORITATIVE SECURE MEDIA STREAMING ==================
 /**
@@ -663,11 +744,10 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
                 });
             }
 
-            const fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
+            const { contentType, fileExt } = await sniffLocalMediaFormat(resolvedFilePath, mediaEntry.type);
             const disposition = isDownload
                 ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
                 : "inline";
-            const contentType = mediaEntry.type === "audio" ? "audio/mp4" : "video/mp4";
 
             res.setHeader("Content-Type", contentType);
             res.setHeader("Content-Disposition", disposition);
@@ -796,7 +876,12 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         }
 
         // Set safe response headers
-        const fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
+        let fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
+        if (rawContentType.includes("webm")) {
+            fileExt = "webm";
+        } else if (rawContentType.includes("ogg")) {
+            fileExt = mediaEntry.type === "audio" ? "ogg" : "ogv";
+        }
         const disposition = isDownload
             ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
             : "inline";
@@ -980,6 +1065,67 @@ app.get("/api/proxy", mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (
             message: "Missing media reference parameter."
         },
         requestId: req.id
+    });
+});
+
+// ================== OFFICIAL EMBED ENDPOINT ==================
+app.get("/api/embed/:platform", extractionLimiter, extractionConcurrencyLimiter, async (req, res) => {
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+
+    try {
+        const embedResult = await resolveEmbed(req.params.platform, req.query.url);
+        return res.json({
+            embed: embedResult,
+            requestId: req.id
+        });
+    } catch (err) {
+        const statusCode = err.statusCode || (err instanceof EmbedError ? err.statusCode : 500);
+        const errorCode = err.code || "EMBED_ERROR";
+        const message = err.message || "Failed to resolve official embed.";
+
+        logger.error({
+            requestId: req.id,
+            platform: req.params.platform,
+            operation: "embed",
+            status: "error",
+            code: errorCode,
+            message
+        });
+
+        return res.status(statusCode).json({
+            error: {
+                code: errorCode,
+                message
+            },
+            requestId: req.id
+        });
+    }
+});
+
+// ================== PUBLIC CAPABILITIES ENDPOINT ==================
+app.get("/api/capabilities", (req, res) => {
+    res.json({
+        capabilities: {
+            platforms: {
+                instagram: Boolean(serverConfig.features.instagram),
+                facebook: Boolean(serverConfig.features.facebook),
+                twitter: Boolean(serverConfig.features.twitter),
+                pinterest: Boolean(serverConfig.features.pinterest),
+                youtube: Boolean(serverConfig.features.youtube),
+                tiktok: Boolean(serverConfig.features.tiktok),
+                generic: Boolean(serverConfig.features.generic)
+            },
+            embedPlatforms: SUPPORTED_EMBED_PLATFORMS,
+            audioOnly: Boolean(serverConfig.features.audioOnly)
+        }
     });
 });
 
