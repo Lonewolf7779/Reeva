@@ -1,6 +1,9 @@
 name: Build and Push to Azure Container Registry
 
 on:
+  push:
+    branches:
+      - phase-4.2-production-platform-gates
   workflow_dispatch:
     inputs:
       image_tag:
@@ -46,7 +49,7 @@ jobs:
 
       - name: Validate image tag input
         env:
-          RAW_TAG: ${{ inputs.image_tag }}
+          RAW_TAG: ${{ inputs.image_tag || 'mobile-test' }}
         run: |
           set -euo pipefail
           # Enforce official Docker image tag specification:
@@ -72,14 +75,14 @@ jobs:
           echo "Confirmed: root Dockerfile is present."
 
       - name: Setup Node.js 24 LTS (Pre-build Verification)
-        if: ${{ inputs.run_tests }}
+        if: ${{ inputs.run_tests != false }}
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: "npm"
 
       - name: Run test suite before build
-        if: ${{ inputs.run_tests }}
+        if: ${{ inputs.run_tests != false }}
         run: |
           set -euo pipefail
           echo "Verifying lockfile and installing dependencies..."
@@ -124,10 +127,11 @@ jobs:
           cat << EOF >> "$GITHUB_STEP_SUMMARY"
           ## Azure Container Registry Build & Push Summary
 
+          * **Trigger Event:** \`${{ github.event_name }}\`
           * **Registry Login Server:** \`${ACR_LOGIN_SERVER}\`
           * **Image:** \`${IMAGE_NAME}\`
-          * **Tag:** \`${VALIDATED_TAG:-${{ inputs.image_tag }}}\`
-          * **Full Image Reference:** \`${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag }}}\`
+          * **Tag:** \`${VALIDATED_TAG:-${{ inputs.image_tag || 'mobile-test' }}}\`
+          * **Full Image Reference:** \`${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}\`
           * **Target Architecture:** \`linux/amd64\`
           * **Authentication Method:** Azure OIDC (Passwordless Federated Identity)
 
@@ -137,6 +141,6 @@ jobs:
           az containerapp update \\
             --name <container-app-name> \\
             --resource-group reeva-rg \\
-            --image ${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag }}}
+            --image ${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}
           \`\`\`
           EOF
