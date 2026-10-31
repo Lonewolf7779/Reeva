@@ -22,6 +22,7 @@ permissions:
   contents: read
 
 env:
+  RESOURCE_GROUP: "reeva-rg"
   ACR_NAME: "reevaacr20261031"
   ACR_LOGIN_SERVER: "reevaacr20261031-hpg2jgtbxb6c5hv.azurecr.io"
   IMAGE_NAME: "reeva"
@@ -75,14 +76,14 @@ jobs:
           echo "Confirmed: root Dockerfile is present."
 
       - name: Setup Node.js 24 LTS (Pre-build Verification)
-        if: ${{ inputs.run_tests != false }}
+        if: ${{ github.event_name == 'push' || inputs.run_tests == true }}
         uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: "npm"
 
       - name: Run test suite before build
-        if: ${{ inputs.run_tests != false }}
+        if: ${{ github.event_name == 'push' || inputs.run_tests == true }}
         run: |
           set -euo pipefail
           echo "Verifying lockfile and installing dependencies..."
@@ -97,9 +98,34 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Authenticate to Azure Container Registry
+      - name: Discover and Authenticate to Azure Container Registry
         run: |
           set -euo pipefail
+          echo "Discovering Azure Container Registry metadata for '${ACR_NAME}' in resource group '${RESOURCE_GROUP}'..."
+
+          DISCOVERED_LOGIN_SERVER=""
+          if ! DISCOVERED_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query loginServer -o tsv 2>acr_show_err.log); then
+            echo "::error::Failed to query registry metadata via Azure Resource Manager." >&2
+            cat acr_show_err.log >&2
+            echo "" >&2
+            echo "DIAGNOSTIC & REMEDIATION:" >&2
+            echo "The managed identity (reeva-gh-actions-identity) requires the 'Reader' role assigned at the registry scope" >&2
+            echo "(or resource group scope '${RESOURCE_GROUP}') in addition to 'AcrPush'." >&2
+            echo "Without ARM read permissions (Microsoft.ContainerRegistry/registries/read), Azure CLI cannot resolve" >&2
+            echo "the partitioned login server '${ACR_LOGIN_SERVER}' and will fail authentication." >&2
+            exit 1
+          fi
+
+          echo "Discovered ACR login server: '${DISCOVERED_LOGIN_SERVER}'"
+          echo "Expected ACR login server:   '${ACR_LOGIN_SERVER}'"
+
+          if [ "${DISCOVERED_LOGIN_SERVER}" != "${ACR_LOGIN_SERVER}" ]; then
+            echo "::error::Registry login server mismatch!" >&2
+            echo "Expected: '${ACR_LOGIN_SERVER}', but Azure returned: '${DISCOVERED_LOGIN_SERVER}'." >&2
+            exit 1
+          fi
+
+          echo "Confirmed: login server matches expected configuration."
           echo "Logging into Azure Container Registry '${ACR_NAME}' via Azure CLI..."
           az acr login --name "${ACR_NAME}"
 
