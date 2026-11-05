@@ -469,6 +469,10 @@
                 this.idleReturnTimer = null;
             }
 
+            if (this.state === STATES.PROCESSING && newState !== STATES.PROCESSING) {
+                this._stopButterflyChase();
+            }
+
             this.state = newState;
             this._setVisible(newState !== STATES.IDLE);
             const msg = this.getLocalizedMessage(newState);
