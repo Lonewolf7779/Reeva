@@ -223,3 +223,19 @@ If you discover a security vulnerability in Reeva, please report it responsibly:
   - Steps to reproduce or proof-of-concept.
   - Impact assessment.
 - **Policy**: We ask that you do not disclose issues publicly until we have had an opportunity to address them.
+
+---
+
+## Production Platform Feature Gates & Fail-Closed Access Controls
+
+To protect the application from exposing third-party platform integrations whose legal, policy, or operational authorization remains unresolved, Reeva enforces centralized production feature gates:
+
+1. **Gate Precedence Before Adapter Execution**: Feature gates are evaluated after initial input/URL syntax validation, but strictly before cache lookup, in-flight operation deduplication, or adapter invocation. A disabled platform or mode never spawns child processes (`yt-dlp`, `ffmpeg`) and never makes outbound requests to source platforms.
+2. **Fail-Closed Production Policy (`NODE_ENV=production`)**:
+   - All platform integrations (`instagram`, `facebook`, `twitter`/`x`, `pinterest`, `youtube`, `tiktok`, `generic`/`more_sites`) and `audioOnly` extraction are **disabled by default**.
+   - Integrations require explicit administrative configuration (e.g., `REEVA_ENABLE_INSTAGRAM=true`).
+   - Unrecognized, malformed, or invalid values (e.g. `yes`, `enable`, `2`) fail closed and resolve to `false`.
+3. **Platform Aliases**: API aliases share identical configuration gates (`twitter` and `x` share `REEVA_ENABLE_X` / `REEVA_ENABLE_TWITTER`; `generic` and `more_sites` share `REEVA_ENABLE_GENERIC` / `REEVA_ENABLE_MORE_SITES`).
+4. **Sanitized Error Responses**: Requests to disabled integrations return structured, sanitized HTTP 503 responses (`PLATFORM_DISABLED` or `MODE_DISABLED`) without leaking internal configuration or paths.
+5. **Safe Capabilities Exposure**: The `/api/capabilities` endpoint provides the frontend with a boolean availability matrix without exposing environment variables, file paths, or credentials.
+6. **Operational vs Legal Distinction**: Enabling an integration via environment configuration is strictly an operational deployment control; it does NOT constitute or establish platform authorization or legal compliance.

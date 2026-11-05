@@ -656,6 +656,38 @@ test("API Generic Endpoint: Streams local file artifact cleanly with headers and
     }
 });
 
+test("Generic HTTP Endpoint: Accurately detects EBML WebM container and sets video/webm with .webm filename", async () => {
+    const { defaultRegistry } = require("../lib/media-registry.cjs");
+    const app = require("../server.cjs");
+    const server = http.createServer(app);
+    await new Promise(r => server.listen(0, "127.0.0.1", r));
+
+    if (!fs.existsSync(REEVA_TEMP_DIR)) fs.mkdirSync(REEVA_TEMP_DIR, { recursive: true });
+    const tempFile = path.join(REEVA_TEMP_DIR, `reeva_gen_ebml_${crypto.randomBytes(8).toString("hex")}.webm`);
+    const ebmlBytes = Buffer.from([0x1A, 0x45, 0xDF, 0xA3, 0x01, 0x02, 0x03, 0x04]);
+    fs.writeFileSync(tempFile, ebmlBytes);
+
+    try {
+        const entry = defaultRegistry.registerMedia({
+            upstreamUrl: `file://${tempFile}`,
+            platform: "generic",
+            type: "video",
+            title: "EBML WebM Video",
+            localFilePath: tempFile
+        });
+
+        const res = await makeRequest(server, `/api/media/${entry.id}?download=1`);
+        assert.equal(res.status, 200);
+        assert.equal(res.headers["content-type"], "video/webm");
+        assert.equal(res.headers["content-disposition"], 'attachment; filename="reeva_generic.webm"');
+        assert.equal(res.headers["content-length"], String(ebmlBytes.length));
+        assert.equal(res.headers["x-content-type-options"], "nosniff");
+    } finally {
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+        server.close();
+    }
+});
+
 // ==============================================================================
 // 7. ASYNC VALIDATION TARGETED TESTS (PHASE 3.18D-3-FIX2)
 // ==============================================================================

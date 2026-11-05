@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Privacy Policy — Reeva</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Privacy Policy for Reeva media downloader. Understand how URLs, temporary files, caching, and logs are handled." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="Privacy Policy — Reeva" />
+    <meta property="og:description" content="Privacy Policy for Reeva media downloader. Understand how URLs, temporary files, caching, and logs are handled." />
+    <meta property="og:type" content="article" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Privacy Policy — Reeva" />
+    <meta name="twitter:description" content="Privacy Policy for Reeva media downloader. Understand how URLs, temporary files, caching, and logs are handled." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body class="page-standalone">
+    <header class="site-header">
+        <div class="header-inner">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-text">REEVA</span>
+                <span class="brand-badge">PRO</span>
+            </a>
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/how-to-use.html" class="nav-link">How to Use</a>
+                <a href="/platforms.html" class="nav-link">Platforms</a>
+                <a href="/faq.html" class="nav-link">FAQ</a>
+                <a href="/about.html" class="nav-link">About</a>
+            </nav>
+            <div class="header-actions">
+                <a href="/" class="action-btn-ghost">Downloader</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="page-container doc-container">
+        <article class="doc-content">
+            <header class="doc-header">
+                <p class="doc-tag">Legal &amp; Privacy</p>
+                <h1 class="doc-title">Privacy Policy</h1>
+                <p class="doc-subtitle">Last updated: October 2026 &bull; Technical transparency and data handling practices of the Reeva media utility.</p>
+            </header>
+
+            <section class="doc-section">
+                <h2>1. Overview and Operational Model</h2>
+                <p>Reeva is an open-source technical utility designed to allow users to retrieve and save publicly accessible media from supported online platforms for personal, educational, or archival use. This document outlines how the application operates from an engineering and data perspective.</p>
+            </section>
+
+            <section class="doc-section">
+                <h2>2. Information Processed by Reeva</h2>
+                <p>Reeva operates with minimal data collection principles built directly into its codebase:</p>
+                <ul>
+                    <li><strong>Submitted URLs:</strong> When you provide a video link, the URL is submitted to the server to identify the platform, validate source domain rules, and query public media metadata. Reeva verifies that submitted URLs use secure HTTPS protocols and match permitted platform hostnames.</li>
+                    <li><strong>No User Accounts:</strong> Reeva does not provide user registration, user logins, profiles, or authentication accounts.</li>
+                    <li><strong>No Cookies or Tracking Scripts:</strong> Reeva does not set persistent tracking cookies, tracking pixels, or third-party analytics beacons in your browser. Language preferences, if chosen, are stored strictly on your device using local storage.</li>
+                </ul>
+            </section>
+
+            <section class="doc-section">
+                <h2>3. Media Storage and Temporary File Retention</h2>
+                <p>Reeva is not a media hosting service and does not maintain a permanent library of downloaded videos or audio files:</p>
+                <ul>
+                    <li><strong>Ephemeral Scratch Storage:</strong> When extraction requires server-side processing (such as format merging for combined streams), temporary artifacts are written to a restricted scratch directory (configured via <code>REEVA_TEMP_DIR</code>).</li>
+                    <li><strong>Automated Cleanup:</strong> Files in temporary scratch storage are assigned a short time-to-live (typically 10 minutes) and registered with an opaque identifier. An automated background cleanup daemon unlinks expired files from disk every 60 seconds. Files are also purged upon stream completion or server shutdown.</li>
+                    <li><strong>Direct Streaming:</strong> Whenever direct CDN access is supported by the source platform, media is proxied directly without saving bytes to disk storage.</li>
+                </ul>
+            </section>
+
+            <section class="doc-section">
+                <h2>4. Caching and Server Logging</h2>
+                <ul>
+                    <li><strong>In-Memory Caching:</strong> Extraction metadata (such as resolved stream URLs and title snippets) is cached in volatile server memory for up to 10 minutes to reduce redundant upstream requests and mitigate rate limits. Cached entries expire automatically and do not persist across server restarts.</li>
+                    <li><strong>Structured Event Logs:</strong> The server writes structured JSON logs for diagnostic and security auditing purposes. Log entries record timestamps, unique request correlation IDs, HTTP methods, status codes, duration, and error codes. URLs recorded in logs are sanitized to strip query parameters where feasible.</li>
+                    <li><strong>Rate Limiting:</strong> In-memory rate limiting monitors request volume per client IP address over short rolling windows (1 to 15 minutes) to protect service infrastructure from denial-of-service (DoS) attempts and resource exhaustion.</li>
+                </ul>
+            </section>
+
+            <section class="doc-section">
+                <h2>5. Third-Party Platform Interactions</h2>
+                <p>When media is retrieved, Reeva makes outbound requests to the third-party platform hosting the requested content (e.g., YouTube, Instagram, TikTok, or Twitter/X). Those requests originate from the Reeva server infrastructure. Third-party platforms receive and process requests according to their own respective terms of service and privacy policies.</p>
+            </section>
+
+            <section class="doc-section">
+                <h2>6. Information Requiring Operator Confirmation</h2>
+                <div class="code-block-wrapper">
+                    <p><strong>Note for Users and Operators:</strong> Reeva is open-source software that may be hosted by independent operators. Specific deployment details depend on the operator's hosting environment:</p>
+                    <ul>
+                        <li><strong>Reverse Proxy / CDN Logs:</strong> If this instance is deployed behind a reverse proxy, CDN, or cloud provider (e.g., Cloudflare, AWS, NGINX), that provider may independently log client IP addresses and connection metadata according to its own retention policy.</li>
+                        <li><strong>Server Location & Jurisdiction:</strong> Physical server location and applicable data privacy regulations (such as GDPR, CCPA, or regional laws) are determined by the deployment operator.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section class="doc-section" id="operator">
+                <h2>7. Contact and Inquiries</h2>
+                <p>If you have questions regarding the technical operation or privacy practices of this Reeva deployment, please contact the instance administrator:</p>
+                <p><strong>Deployment Operator Contact:</strong> [Operator Contact Email / Administrator Address to be configured by deployment owner]</p>
+                <p><strong>Source Repository:</strong> <a href="https://github.com/Lonewolf7779/Reeva" target="_blank" rel="noopener noreferrer">https://github.com/Lonewolf7779/Reeva</a></p>
+            </section>
+        </article>
+    </main>
+
+    <footer class="site-footer">
+        <div class="footer-inner">
+            <div class="footer-nav-grid">
+                <div class="footer-col">
+                    <p class="footer-col-title">Product</p>
+                    <ul class="footer-col-list">
+                        <li><a href="/">Media Downloader</a></li>
+                        <li><a href="/how-to-use.html">How to Use</a></li>
+                        <li><a href="/platforms.html">Supported Platforms</a></li>
+                        <li><a href="/faq.html">Frequently Asked Questions</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <p class="footer-col-title">Architecture</p>
+                    <ul class="footer-col-list">
+                        <li><a href="/platforms.html#capabilities">Platform Capabilities</a></li>
+                        <li><a href="/about.html#security">Security Architecture</a></li>
+                        <li><a href="/about.html#storage">Scratch Storage Lifecycle</a></li>
+                        <li><a href="/about.html#tls">TLS &amp; SSRF Controls</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <p class="footer-col-title">Company</p>
+                    <ul class="footer-col-list">
+                        <li><a href="/about.html">About Reeva</a></li>
+                        <li><a href="/contact.html">Contact Us</a></li>
+                        <li><a href="/copyright.html">DMCA / Takedown Policy</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <p class="footer-col-title">Legal</p>
+                    <ul class="footer-col-list">
+                        <li><a href="/privacy.html">Privacy Policy</a></li>
+                        <li><a href="/terms.html">Terms of Service</a></li>
+                        <li><a href="/copyright.html#complaints">Copyright Complaints</a></li>
+                        <li><a href="/privacy.html#operator">Operator Contact</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="footer-bottom">
+                <div class="footer-legal-links">
+                    <a href="/privacy.html" class="footer-link" id="link-privacy">Privacy Policy</a>
+                    <span class="footer-separator" aria-hidden="true">&bull;</span>
+                    <a href="/terms.html" class="footer-link" id="link-terms">Terms of Service</a>
+                    <span class="footer-separator" aria-hidden="true">&bull;</span>
+                    <a href="/copyright.html" class="footer-link">Copyright &amp; DMCA</a>
+                </div>
+                <p class="footer-disclaimer" id="footer-disclaimer">Reeva is an independent media utility. It is not affiliated with, endorsed by, or sponsored by YouTube, Meta, Instagram, Facebook, TikTok, X (Twitter), Pinterest, or any other third-party platform. All trademarks and brand marks belong to their respective owners.</p>
+                <p class="footer-copyright" id="footer-copyright">&copy; 2026 Reeva. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+</body>
+
+</html>

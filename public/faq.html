@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Frequently Asked Questions — Reeva</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Clear, technical answers to common questions about Reeva's downloader, embed fallbacks, storage policies, and supported platforms." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="Frequently Asked Questions — Reeva" />
+    <meta property="og:description" content="Clear, technical answers to common questions about Reeva's downloader, embed fallbacks, storage policies, and supported platforms." />
+    <meta property="og:type" content="article" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Frequently Asked Questions — Reeva" />
+    <meta name="twitter:description" content="Clear, technical answers to common questions about Reeva's downloader, embed fallbacks, storage policies, and supported platforms." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Site Header -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
+
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/" class="nav-link">Downloader</a>
+                <a href="/how-to-use.html" class="nav-link">How to Use</a>
+                <a href="/platforms.html" class="nav-link">Platforms</a>
+                <a href="/faq.html" class="nav-link active">FAQ</a>
+                <a href="/about.html" class="nav-link">About</a>
+            </nav>
+
+            <div class="header-controls">
+                <a href="/" class="back-link">← Return to Tool</a>
+            </div>
+        </header>
+
+        <!-- Main Body -->
+        <main class="main-content">
+            <article class="policy-card">
+                <header class="policy-header">
+                    <h1>Frequently Asked Questions</h1>
+                    <p>Honest answers regarding Reeva's architecture, extraction modes, and privacy model.</p>
+                </header>
+
+                <div class="policy-body">
+                    <div class="faq-list">
+                        <div class="faq-item">
+                            <div class="faq-question">1. What is Reeva?</div>
+                            <div class="faq-answer">Reeva is an open-source, minimalist web utility designed to allow users to retrieve, preview, and save publicly accessible video media from supported platforms for personal archival and educational purposes.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">2. How does Reeva work?</div>
+                            <div class="faq-answer">When you submit a URL, Reeva's hardened backend queries official platform syndication and metadata endpoints using strict TLS connections. It parses available stream manifests, verifies media magic bytes and codecs, and streams the verified audio/video binary directly to your browser.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">3. Which platforms are supported?</div>
+                            <div class="faq-answer">Reeva provides verified extraction for YouTube, Twitter/X, Pinterest, and generic public web MP4/WebM files. It also integrates TikTok, Instagram, and Facebook with public extraction and automatic official sandboxed embed fallbacks.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">4. Why might a URL fail to download?</div>
+                            <div class="faq-answer">URLs can fail if the original post has been deleted, set to private, protected by login credentials, or geo-restricted. Failures also occur if the link is malformed or points to an unsupported domain blocked by our security filters.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">5. Why are some videos embed-only?</div>
+                            <div class="faq-answer">Certain platforms (such as Meta and ByteDance) enforce strict terms or edge challenges that restrict unauthenticated binary file scraping. To respect platform terms while still serving the user, Reeva automatically renders the official sandboxed player instead of failing silently.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">6. Does Reeva host or store uploaded videos?</div>
+                            <div class="faq-answer">No. Reeva never hosts, stores, or re-broadcasts media. It functions purely as a transient gateway. Content is either streamed ephemerally or displayed via the platform's official embed player.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">7. Does Reeva retain downloaded files on the server?</div>
+                            <div class="faq-answer">No. Any temporary files written to server scratch storage (e.g., during format merging) are assigned a short 10-minute lifespan. An automated daemon purges all expired artifacts from disk every 60 seconds.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">8. Can users download private content?</div>
+                            <div class="faq-answer">No. Reeva does not accept credentials, bypass access controls, or crack paywalls. It can only process content that is publicly accessible to any unauthenticated visitor on the open web.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">9. What permissions should I have before downloading?</div>
+                            <div class="faq-answer">You should only download content that you own, content published under permissive licenses (such as Creative Commons), or content you have explicit legal permission to archive for personal, educational, or fair-use purposes.</div>
+                        </div>
+
+                        <div class="faq-item">
+                            <div class="faq-question">10. Is Reeva affiliated with social networks?</div>
+                            <div class="faq-answer">No. Reeva is an independent open-source project and is not affiliated, sponsored, or endorsed by YouTube, Meta, ByteDance, X Corp, or Pinterest.</div>
+                        </div>
+                    </div>
+                </div>
+            </article>
+
+            <!-- Reserved Advertisement Container (AdSense Readiness) -->
+            <aside class="ad-slot-editorial" aria-label="Sponsor Area">
+                <span class="ad-slot-label">Editorial Sponsorship</span>
+                <span class="ad-slot-placeholder">Reserved editorial sponsorship space &mdash; strictly separated from downloader controls</span>
+            </aside>
+        </main>
+
+        <!-- Site Footer -->
+        <footer class="site-footer">
+            <div class="footer-bottom">
+                <div class="footer-links">
+                    <a href="/privacy.html" class="footer-link">Privacy Policy</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/terms.html" class="footer-link">Terms of Service</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/copyright.html" class="footer-link">DMCA / Copyright</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/contact.html" class="footer-link">Contact</a>
+                </div>
+                <div class="footer-copy">
+                    <span>Disclaimer: This tool is for personal and educational use only.</span>
+                    <span>We never store or host media. All rights belong to their respective owners.</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+</body>
+
+</html>
