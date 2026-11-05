@@ -83,11 +83,6 @@ function createAppController(options = {}) {
     if (companionLib && typeof companionLib.initCompanion === "function") {
         companion = companionLib.initCompanion("companion-stage", { initialLanguage: initialLang }) ||
                     companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
-        if (companion) {
-            setTimeout(() => {
-                companion.triggerState(companionLib.STATES.WELCOME, 4000);
-            }, 600);
-        }
     }
 
     if (elements.langSelect) {
@@ -557,6 +552,16 @@ function createAppController(options = {}) {
 
     if (elements.urlIn) {
         elements.urlIn.addEventListener("focus", () => {
+            if (companion && companionLib && state.getStatus() === "idle") {
+                companion.triggerState(companionLib.STATES.CURIOUS, 3500);
+            }
+        });
+        elements.urlIn.addEventListener("input", () => {
+            if (companion && companionLib && state.getStatus() === "idle" && elements.urlIn.value.trim().length > 0) {
+                companion.triggerState(companionLib.STATES.CURIOUS, 3500);
+            }
+        });
+        elements.urlIn.addEventListener("paste", () => {
             if (companion && companionLib && state.getStatus() === "idle") {
                 companion.triggerState(companionLib.STATES.CURIOUS, 3500);
             }

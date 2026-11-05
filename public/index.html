@@ -154,8 +154,8 @@
             </section>
         </div>
 
-        <!-- Right Column (Desktop) / Companion Stage (Mobile): Dedicated Visual Novel Companion -->
-        <aside id="companion-stage" class="widget-card companion-stage" aria-label="Reeva Anime Companion">
+        <!-- Right Column (Desktop) / Companion Stage (Mobile): Dedicated Visual Novel Companion (Hidden by default) -->
+        <aside id="companion-stage" class="widget-card companion-stage is-hidden" aria-label="Reeva Anime Companion" aria-hidden="true">
             <div class="companion-stage-header">
                 <div class="companion-identity">
                     <span class="companion-pulse-dot" aria-hidden="true"></span>
@@ -167,17 +167,40 @@
                 </div>
             </div>
 
-            <!-- Visual Novel Speech Dialogue Box -->
-            <div id="companion-dialogue" class="companion-dialogue-card" role="status" aria-live="polite">
+            <!-- Visual Novel Speech Dialogue Box (Hidden initially) -->
+            <div id="companion-dialogue" class="companion-dialogue-card hidden" role="status" aria-live="polite">
                 <div class="companion-dialogue-header">
                     <span class="companion-speaker-label">Reeva</span>
                     <button id="companion-dialogue-close" class="companion-dialogue-close-btn" type="button" aria-label="Dismiss message">&times;</button>
                 </div>
-                <p id="companion-dialogue-text" class="companion-dialogue-text">Hey there! Ready to download your favorite media?</p>
+                <p id="companion-dialogue-text" class="companion-dialogue-text">Ready when you are!</p>
             </div>
 
             <!-- Character Portrait Frame -->
             <div class="companion-portrait-frame">
+                <!-- Interactive Processing Butterfly -->
+                <div id="comp-butterfly" class="comp-butterfly hidden" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" class="butterfly-svg" width="28" height="28" aria-hidden="true">
+                        <defs>
+                            <linearGradient id="butterfly-grad-l" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#38bdf8" />
+                                <stop offset="60%" stop-color="#818cf8" />
+                                <stop offset="100%" stop-color="#c084fc" />
+                            </linearGradient>
+                            <linearGradient id="butterfly-grad-r" x1="100%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" stop-color="#38bdf8" />
+                                <stop offset="60%" stop-color="#818cf8" />
+                                <stop offset="100%" stop-color="#c084fc" />
+                            </linearGradient>
+                        </defs>
+                        <path class="butterfly-wing wing-left" d="M16 16 C12 6, 2 8, 4 18 C5 24, 14 20, 16 16 Z" fill="url(#butterfly-grad-l)" />
+                        <path class="butterfly-wing wing-right" d="M16 16 C20 6, 30 8, 28 18 C27 24, 18 20, 16 16 Z" fill="url(#butterfly-grad-r)" />
+                        <ellipse cx="16" cy="16" rx="1.5" ry="5" fill="#f8fafc" />
+                        <path d="M15.5 11 Q13 7 11 8 M16.5 11 Q19 7 21 8" stroke="#f8fafc" stroke-width="0.8" fill="none" stroke-linecap="round" />
+                    </svg>
+                    <div class="butterfly-sparkle"></div>
+                </div>
+
                 <div id="anime-companion-root" class="companion-character-wrap" aria-label="Reeva Visual Novel Character">
                     <div id="comp-sprite-container" class="companion-sprite-container">
                         <img id="comp-expr-happy" class="comp-expr-img" src="/img/companion/expressions/happy.png" alt="Reeva Happy" />
@@ -190,6 +213,7 @@
                         <img id="comp-expr-disappointed" class="comp-expr-img hidden" src="/img/companion/expressions/disappointed.png" alt="Reeva Disappointed" />
                         <img id="comp-expr-crying" class="comp-expr-img hidden" src="/img/companion/expressions/crying.png" alt="Reeva Crying" />
                         <img id="comp-expr-celebrating" class="comp-expr-img hidden" src="/img/companion/expressions/celebrating.png" alt="Reeva Celebrating" />
+                        <img id="comp-eyelids" class="comp-eyelids" src="/img/companion/eyelids-closed.png" alt="Reeva Blinking Eyelids" aria-hidden="true" />
                     </div>
                 </div>
             </div>
