@@ -107,6 +107,7 @@ test("processing shows the butterfly and a failure switches to crying eyes", () 
     assert.equal(elements["comp-expr-crying"].classList.contains("hidden"), false);
     assert.equal(butterfly.hidden, true);
     assert.equal(butterfly.classList.contains("is-flying"), false);
+    controller.triggerState(companion.STATES.IDLE);
 });
 
 test("success and failure can both return to hidden idle state", () => {
@@ -126,4 +127,5 @@ test("network errors use the watery crying expression", () => {
     const controller = setupDom();
     controller.triggerState(companion.STATES.NETWORK_ERROR, 0);
     assert.equal(controller.currentExpression, companion.EXPRESSIONS.CRYING);
+    controller.triggerState(companion.STATES.IDLE);
 });
