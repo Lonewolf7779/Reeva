@@ -267,15 +267,22 @@
             this.currentLanguage = options.initialLanguage || "en";
             this.currentExpression = EXPRESSIONS.HAPPY;
             this.idleReturnTimer = null;
+            this.blinkTimer = null;
+            this.butterflyTimer = null;
+            this.butterflyAnimations = [];
 
             // DOM Elements
             this.spriteContainer = document.getElementById("comp-sprite-container");
+            this.butterflyEl = document.getElementById("companion-butterfly");
+            this.workspaceLayout = this.rootEl && typeof this.rootEl.closest === "function"
+                ? this.rootEl.closest(".workspace-layout")
+                : null;
             this.dialogue = new VisualNovelDialogue();
             this.animationEngine = new VisualNovelAnimations(this.spriteContainer);
 
             this._initInteractions();
             this.setExpression(EXPRESSIONS.HAPPY);
-            this.animationEngine.startBreathing();
+            this._setVisible(false);
         }
 
         _initInteractions() {
@@ -285,6 +292,117 @@
                         this.triggerState(STATES.WELCOME, 3500);
                     }
                 });
+            }
+        }
+
+        _setVisible(visible) {
+            if (this.rootEl) {
+                this.rootEl.classList.toggle("is-active", visible);
+                this.rootEl.setAttribute("aria-hidden", visible ? "false" : "true");
+            }
+            if (this.workspaceLayout) {
+                this.workspaceLayout.classList.toggle("companion-active", visible);
+            }
+
+            if (visible) {
+                this._startBlinking();
+            } else {
+                this._stopBlinking();
+                this._stopButterflyChase();
+            }
+        }
+
+        _startBlinking() {
+            if (this.blinkTimer || !this.spriteContainer) return;
+            const blink = () => {
+                if (this.state === STATES.IDLE || !this.spriteContainer) {
+                    this.blinkTimer = null;
+                    return;
+                }
+
+                const reducedMotion = typeof window !== "undefined" &&
+                    window.matchMedia &&
+                    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+                if (!reducedMotion && typeof this.spriteContainer.animate === "function") {
+                    this.spriteContainer.animate(
+                        [
+                            { transform: "scaleY(1)" },
+                            { transform: "scaleY(0.985)", offset: 0.48 },
+                            { transform: "scaleY(1)" }
+                        ],
+                        { duration: 150, easing: "ease-in-out" }
+                    );
+                }
+
+                this.blinkTimer = setTimeout(blink, 3800 + Math.floor(Math.random() * 2200));
+            };
+
+            this.blinkTimer = setTimeout(blink, 1800);
+        }
+
+        _stopBlinking() {
+            if (this.blinkTimer) {
+                clearTimeout(this.blinkTimer);
+                this.blinkTimer = null;
+            }
+        }
+
+        _playButterflyChase() {
+            if (!this.butterflyEl || !this.spriteContainer) return;
+
+            this._stopButterflyChase();
+            const reducedMotion = typeof window !== "undefined" &&
+                window.matchMedia &&
+                window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+            this.butterflyEl.hidden = false;
+            this.butterflyEl.classList.add("is-flying");
+
+            if (reducedMotion || typeof this.butterflyEl.animate !== "function") {
+                this.butterflyEl.classList.add("is-caught");
+                this.butterflyTimer = setTimeout(() => this._stopButterflyChase(), 900);
+                return;
+            }
+
+            if (typeof this.spriteContainer.animate === "function") {
+                this.butterflyAnimations.push(this.spriteContainer.animate(
+                    [
+                        { transform: "translate3d(0, 0, 0)" },
+                        { transform: "translate3d(-9px, -3px, 0)", offset: 0.35 },
+                        { transform: "translate3d(8px, -2px, 0)", offset: 0.72 },
+                        { transform: "translate3d(0, 0, 0)" }
+                    ],
+                    { duration: 1900, easing: "ease-in-out" }
+                ));
+            }
+
+            this.butterflyAnimations.push(this.butterflyEl.animate(
+                [
+                    { transform: "translate3d(0, 0, 0) rotate(-8deg) scale(0.8)", opacity: 0.0, offset: 0 },
+                    { transform: "translate3d(34px, -26px, 0) rotate(12deg) scale(1)", opacity: 1, offset: 0.18 },
+                    { transform: "translate3d(104px, -8px, 0) rotate(-14deg) scale(0.9)", opacity: 1, offset: 0.52 },
+                    { transform: "translate3d(48px, 26px, 0) rotate(18deg) scale(0.7)", opacity: 1, offset: 0.82 },
+                    { transform: "translate3d(18px, 4px, 0) rotate(0deg) scale(0)", opacity: 0, offset: 1 }
+                ],
+                { duration: 2100, easing: "ease-in-out" }
+            ));
+
+            this.butterflyTimer = setTimeout(() => this._stopButterflyChase(), 2250);
+        }
+
+        _stopButterflyChase() {
+            if (this.butterflyTimer) {
+                clearTimeout(this.butterflyTimer);
+                this.butterflyTimer = null;
+            }
+            this.butterflyAnimations.forEach((animation) => {
+                try { animation.cancel(); } catch (_) {}
+            });
+            this.butterflyAnimations = [];
+            if (this.butterflyEl) {
+                this.butterflyEl.classList.remove("is-flying", "is-caught");
+                this.butterflyEl.hidden = true;
             }
         }
 
@@ -341,7 +459,8 @@
             const currentPriority = STATE_PRIORITIES[this.state] || 0;
             const newPriority = STATE_PRIORITIES[newState] || 0;
 
-            if (newPriority < currentPriority && this.state !== STATES.IDLE) {
+            // IDLE is an unconditional terminal transition so every timed reaction can hide cleanly.
+            if (newState !== STATES.IDLE && newPriority < currentPriority && this.state !== STATES.IDLE) {
                 return;
             }
 
@@ -351,6 +470,7 @@
             }
 
             this.state = newState;
+            this._setVisible(newState !== STATES.IDLE);
             const msg = this.getLocalizedMessage(newState);
             const mood = this.getLocalizedMood(newState);
 
@@ -379,6 +499,7 @@
                 case STATES.PROCESSING:
                     this.setExpression(EXPRESSIONS.FOCUSED);
                     this.animationEngine.playProcessing();
+                    this._playButterflyChase();
                     if (msg) this.dialogue.show(msg, mood, 0); // Keep open during active network extraction
                     break;
 
@@ -408,7 +529,7 @@
 
                 case STATES.NETWORK_ERROR:
                     this.animationEngine.stopProcessing();
-                    this.setExpression(EXPRESSIONS.DISAPPOINTED);
+                    this.setExpression(EXPRESSIONS.CRYING);
                     this.animationEngine.playCrying();
                     if (msg) this.dialogue.show(msg, mood, durationMs || 4800);
                     this._scheduleReturnToIdle(durationMs || 5000);
@@ -417,8 +538,9 @@
                 case STATES.IDLE:
                 default:
                     this.animationEngine.stopProcessing();
+                    this.animationEngine.stopBreathing();
                     this.setExpression(EXPRESSIONS.HAPPY);
-                    this.animationEngine.startBreathing();
+                    this.dialogue.hide();
                     if (this.dialogue.moodTagEl) {
                         this.dialogue.moodTagEl.textContent = this.getLocalizedMood(STATES.IDLE);
                     }
