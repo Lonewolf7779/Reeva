@@ -155,7 +155,7 @@
         </div>
 
         <!-- Right Column (Desktop) / Companion Stage (Mobile): Dedicated Visual Novel Companion -->
-        <aside id="companion-stage" class="widget-card companion-stage" aria-label="Reeva Anime Companion">
+        <aside id="companion-stage" class="widget-card companion-stage" aria-label="Reeva Anime Companion" aria-hidden="true">
             <div class="companion-stage-header">
                 <div class="companion-identity">
                     <span class="companion-pulse-dot" aria-hidden="true"></span>
@@ -168,7 +168,7 @@
             </div>
 
             <!-- Visual Novel Speech Dialogue Box -->
-            <div id="companion-dialogue" class="companion-dialogue-card" role="status" aria-live="polite">
+            <div id="companion-dialogue" class="companion-dialogue-card hidden" role="status" aria-live="polite">
                 <div class="companion-dialogue-header">
                     <span class="companion-speaker-label">Reeva</span>
                     <button id="companion-dialogue-close" class="companion-dialogue-close-btn" type="button" aria-label="Dismiss message">&times;</button>
@@ -178,6 +178,7 @@
 
             <!-- Character Portrait Frame -->
             <div class="companion-portrait-frame">
+                <span id="companion-butterfly" class="companion-butterfly" aria-hidden="true" hidden>🦋</span>
                 <div id="anime-companion-root" class="companion-character-wrap" aria-label="Reeva Visual Novel Character">
                     <div id="comp-sprite-container" class="companion-sprite-container">
                         <img id="comp-expr-happy" class="comp-expr-img" src="/img/companion/expressions/happy.png" alt="Reeva Happy" />

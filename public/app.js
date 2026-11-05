@@ -83,11 +83,7 @@ function createAppController(options = {}) {
     if (companionLib && typeof companionLib.initCompanion === "function") {
         companion = companionLib.initCompanion("companion-stage", { initialLanguage: initialLang }) ||
                     companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
-        if (companion) {
-            setTimeout(() => {
-                companion.triggerState(companionLib.STATES.WELCOME, 4000);
-            }, 600);
-        }
+        // Keep the companion hidden on page load. It appears only in response to user actions or request states.
     }
 
     if (elements.langSelect) {
