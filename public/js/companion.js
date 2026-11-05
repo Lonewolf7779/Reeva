@@ -154,6 +154,15 @@
             });
         }
 
+        playLookTowardUser() {
+            this._runAnimation({
+                translateY: [5, 0],
+                scale: [0.985, 1],
+                duration: 560,
+                easing: "easeOutCubic"
+            });
+        }
+
         playCurious() {
             this._runAnimation({
                 rotate: [-2, 0],
@@ -205,6 +214,7 @@
             this.closeBtn = document.getElementById("companion-dialogue-close");
             this.moodTagEl = document.getElementById("companion-mood-tag");
             this.dismissTimer = null;
+            this.hideAnimationTimer = null;
 
             if (this.closeBtn) {
                 this.closeBtn.addEventListener("click", () => this.hide());
@@ -212,6 +222,10 @@
         }
 
         show(text, mood = "Ready", autoDismissMs = 5000) {
+            if (this.hideAnimationTimer) {
+                clearTimeout(this.hideAnimationTimer);
+                this.hideAnimationTimer = null;
+            }
             if (this.dismissTimer) {
                 clearTimeout(this.dismissTimer);
                 this.dismissTimer = null;
@@ -246,11 +260,12 @@
             if (this.dialogueEl) {
                 this.dialogueEl.classList.remove("bubble-enter");
                 this.dialogueEl.classList.add("bubble-exit");
-                setTimeout(() => {
+                this.hideAnimationTimer = setTimeout(() => {
                     if (this.dialogueEl) {
                         this.dialogueEl.classList.add("hidden");
                         this.dialogueEl.classList.remove("bubble-exit");
                     }
+                    this.hideAnimationTimer = null;
                 }, 220);
             }
         }
@@ -305,6 +320,7 @@
             }
 
             if (visible) {
+                this.animationEngine.playLookTowardUser();
                 this._startBlinking();
             } else {
                 this._stopBlinking();
