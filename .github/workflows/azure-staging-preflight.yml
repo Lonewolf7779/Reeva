@@ -63,12 +63,29 @@ jobs:
         run: |
           set -euo pipefail
           echo "Querying authoritative ARM metadata for '${EXPECTED_ENV_NAME}'..."
-          ENV_JSON=$(az rest --method get \
+          if ! az rest --method get \
             --url "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.App/managedEnvironments/${EXPECTED_ENV_NAME}?api-version=${ARM_API_VERSION}" \
-            -o json 2>env_err.log || true)
+            -o json > env.json 2>env_err.log; then
 
-          if [ -z "${ENV_JSON}" ]; then
-            echo "::error::Could not query environment '${EXPECTED_ENV_NAME}'." >&2
+            ERR_MSG=$(cat env_err.log 2>/dev/null || echo "Unknown ARM error")
+
+            if echo "${ERR_MSG}" | grep -Ei "(AuthorizationFailed|Forbidden|Denied|ClientSecretCredential|InvalidAuthenticationTokenTenant)" > /dev/null; then
+              echo "::error::Authorization failure querying '${EXPECTED_ENV_NAME}' (HTTP 403 / AuthorizationFailed): ${ERR_MSG}" >&2
+              exit 1
+            elif echo "${ERR_MSG}" | grep -Ei "(ResourceNotFound|NotFound|could not be found|does not exist)" > /dev/null; then
+              echo "::error::Target managed environment '${EXPECTED_ENV_NAME}' was not found in '${RESOURCE_GROUP}' (HTTP 404 / ResourceNotFound): ${ERR_MSG}" >&2
+              exit 1
+            elif echo "${ERR_MSG}" | grep -Ei "(InvalidApiVersionParameter|NoRegisteredProviderFound|InvalidResourceType)" > /dev/null; then
+              echo "::error::ARM API call failed due to API version or provider configuration: ${ERR_MSG}" >&2
+              exit 1
+            else
+              echo "::error::ARM API call failed for environment '${EXPECTED_ENV_NAME}': ${ERR_MSG}" >&2
+              exit 1
+            fi
+          fi
+
+          if [ ! -s env.json ]; then
+            echo "::error::ARM API returned an empty response (0 bytes) for environment '${EXPECTED_ENV_NAME}'." >&2
             cat env_err.log >&2
             exit 1
           fi
@@ -76,11 +93,11 @@ jobs:
           python3 - << 'PYEOF'
           import json, sys
 
-          raw = """${ENV_JSON}"""
           try:
-              data = json.loads(raw)
+              with open("env.json", "r", encoding="utf-8") as f:
+                  data = json.load(f)
           except Exception as e:
-              print(f"::error::Failed to parse environment ARM JSON: {e}", file=sys.stderr)
+              print(f"::error::ARM API returned malformed or unparseable JSON for environment: {e}", file=sys.stderr)
               sys.exit(1)
 
           props = data.get("properties") or {}
@@ -209,22 +226,31 @@ jobs:
           TARGET_TAG="staging-${COMMIT_SHA}"
           echo "Inspecting ACR for deterministic tag '${TARGET_TAG}'..."
 
-          MANIFEST_JSON=$(az acr manifest show-metadata \
+          if ! az acr manifest show-metadata \
             --name "reeva:${TARGET_TAG}" \
             --registry "${ACR_NAME}" \
-            -o json 2>acr_err.log || true)
+            -o json > acr_manifest.json 2>acr_err.log; then
 
-          if [ -z "${MANIFEST_JSON}" ]; then
-            echo "::error::Image 'reeva:${TARGET_TAG}' was not found in ACR '${ACR_NAME}'." >&2
-            cat acr_err.log >&2
+            ERR_MSG=$(cat acr_err.log 2>/dev/null || echo "Unknown ACR error")
+            echo "::error::Image 'reeva:${TARGET_TAG}' was not found in ACR '${ACR_NAME}': ${ERR_MSG}" >&2
+            exit 1
+          fi
+
+          if [ ! -s acr_manifest.json ]; then
+            echo "::error::ACR returned an empty response (0 bytes) for image 'reeva:${TARGET_TAG}'." >&2
             exit 1
           fi
 
           python3 - << 'PYEOF'
           import json, sys
 
-          raw = """${MANIFEST_JSON}"""
-          data = json.loads(raw)
+          try:
+              with open("acr_manifest.json", "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"::error::Failed to parse ACR manifest metadata JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
           print(f"ACR Tag:         reeva:{data.get('tags', [''])[0] if data.get('tags') else 'N/A'}")
           print(f"Digest:          {data.get('digest')}")
           print(f"Architecture:    {data.get('architecture', 'amd64')}")
