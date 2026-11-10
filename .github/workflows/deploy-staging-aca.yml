@@ -1,0 +1,318 @@
+name: Deploy Staging Container App
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Full 40-character Git commit SHA to deploy (e.g. 4f8e91a0c...)"
+        required: true
+        type: string
+      confirm_staging_target:
+        description: "Type 'DEPLOY_STAGING' to confirm deployment to reeva-mobile-staging"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: "reeva-rg"
+  ACR_NAME: "reevaacr20261031"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
+  EXPECTED_ENV_NAME: "reeva-wp-env"
+  STAGING_APP_NAME: "reeva-mobile-staging"
+  PROD_APP_NAME: "reeva-mobile-app"
+  LEGACY_TEST_APP: "reeva-mobile-test"
+  TARGET_PORT: "3000"
+
+jobs:
+  deploy-staging:
+    name: Deploy & Validate reeva-mobile-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Strict Input Validation & Safety Gates
+        env:
+          CONFIRMATION: ${{ inputs.confirm_staging_target }}
+          INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          echo "Validating staging deployment confirmation..."
+          if [ "${CONFIRMATION}" != "DEPLOY_STAGING" ]; then
+            echo "::error::Deployment aborted! Input 'confirm_staging_target' must be exactly 'DEPLOY_STAGING'." >&2
+            exit 1
+          fi
+
+          echo "Validating full Git commit SHA..."
+          COMMIT_SHA=$(echo "${INPUT_COMMIT_SHA}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+          # Enforce full 40-character hexadecimal Git commit SHA
+          if ! [[ "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid commit SHA '${INPUT_COMMIT_SHA}'. Must be a full 40-character hexadecimal Git commit SHA." >&2
+            exit 1
+          fi
+
+          EXPECTED_STAGING_TAG="staging-${COMMIT_SHA}"
+          echo "COMMIT_SHA=${COMMIT_SHA}" >> "$GITHUB_ENV"
+          echo "EXPECTED_STAGING_TAG=${EXPECTED_STAGING_TAG}" >> "$GITHUB_ENV"
+          echo "Validated commit SHA: ${COMMIT_SHA}"
+          echo "Constructed deterministic staging tag: ${EXPECTED_STAGING_TAG}"
+
+      - name: 2. Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 3. Verify Target Application Invariants & Ingress Prerequisites
+        run: |
+          set -euo pipefail
+          # Hard collision check: Staging must NEVER collide with production or legacy resources
+          if [ "${STAGING_APP_NAME}" = "${PROD_APP_NAME}" ] || [ "${STAGING_APP_NAME}" = "${LEGACY_TEST_APP}" ]; then
+            echo "::error::FATAL: Target app name collides with protected app (${PROD_APP_NAME} / ${LEGACY_TEST_APP}). Halting!" >&2
+            exit 1
+          fi
+
+          echo "Checking if '${STAGING_APP_NAME}' exists in resource group '${RESOURCE_GROUP}'..."
+          if ! az containerapp show --name "${STAGING_APP_NAME}" --resource-group "${RESOURCE_GROUP}" -o json > staging_app.json 2>staging_err.log; then
+            echo "::error::'${STAGING_APP_NAME}' does not exist in '${RESOURCE_GROUP}' or is inaccessible." >&2
+            echo "To protect infrastructure, this workflow will NOT create resources automatically." >&2
+            echo "Please create '${STAGING_APP_NAME}' once manually in '${EXPECTED_ENV_NAME}' before executing deployment." >&2
+            cat staging_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("staging_app.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          props = app.get("properties") or {}
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
+
+          # 1. Environment check
+          env_id = props.get("managedEnvironmentId", "")
+          expected_env = "reeva-wp-env"
+          if not env_id.endswith(f"/managedEnvironments/{expected_env}"):
+              print(f"::error::Target app is attached to '{env_id}', expected '{expected_env}'. Halting!", file=sys.stderr)
+              sys.exit(1)
+          print(f"Confirmed: Staging app is attached to approved environment '{expected_env}'.")
+
+          # 2. Runtime port check (Must match container listening port 3000)
+          target_port = ingress.get("targetPort")
+          if target_port != 3000:
+              print(f"::error::Staging app ingress targetPort is {target_port}, expected 3000. Correct via Azure CLI before deploying.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Confirmed: Ingress targetPort matches container runtime port ({target_port}).")
+
+          # 3. Ingress Security Restrictions Prerequisite check
+          ip_rules = ingress.get("ipSecurityRestrictions") or []
+          if not ip_rules:
+              print("::error::Staging ingress security restrictions are MISSING. Ingress restriction is an enforced deployment prerequisite to prevent unauthorized public access.", file=sys.stderr)
+              print("Configure access restrictions via 'az containerapp ingress access-restriction set' before deploying.", file=sys.stderr)
+              sys.exit(1)
+
+          has_unrestricted_rule = any(r.get("ipAddressRange") in ["0.0.0.0/0", "::/0"] and r.get("action") == "Allow" for r in ip_rules)
+          if has_unrestricted_rule:
+              print("::error::Staging ingress contains an unrestricted 0.0.0.0/0 Allow rule. Access must be restricted to authorized IPs as a deployment prerequisite.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Confirmed: Staging ingress has {len(ip_rules)} active IP security restriction rules configured.")
+          PYEOF
+
+      - name: 4. Verify Image Existence, Provenance & Resolve Immutable Digest
+        id: resolve-digest
+        run: |
+          set -euo pipefail
+          echo "Querying ACR '${ACR_NAME}' for deterministic staging tag '${EXPECTED_STAGING_TAG}'..."
+
+          MANIFEST_JSON=$(az acr manifest show-metadata \
+            --name "reeva:${EXPECTED_STAGING_TAG}" \
+            --registry "${ACR_NAME}" \
+            -o json 2>manifest_err.log || true)
+
+          if [ -z "${MANIFEST_JSON}" ]; then
+            echo "::error::Staging image 'reeva:${EXPECTED_STAGING_TAG}' was not found in ACR '${ACR_NAME}'." >&2
+            echo "Ensure that workflow 'build-and-push-acr.yml' was executed with 'publish_staging_image=true' for commit ${COMMIT_SHA} before attempting deployment." >&2
+            cat manifest_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          raw = """${MANIFEST_JSON}"""
+          data = json.loads(raw)
+          digest = data.get("digest") or ""
+
+          if not digest.startswith("sha256:") or len(digest) != 71:
+              print(f"::error::Manifest returned invalid digest: '{digest}'.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Manifest Digest: {digest}")
+          print(f"Architecture:    {data.get('architecture', 'amd64')}")
+          print(f"Created Time:    {data.get('createdTime')}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"IMAGE_DIGEST={digest}\n")
+              env_file.write(f"PINNED_IMAGE={os.environ['ACR_LOGIN_SERVER']}/reeva@{digest}\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out_file:
+              out_file.write(f"digest={digest}\n")
+          PYEOF
+
+          echo "Authenticating Docker to ACR '${ACR_NAME}' for image configuration inspection..."
+          az acr login --name "${ACR_NAME}"
+
+          echo "Pulling '${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}' to inspect container configuration..."
+          if ! docker pull "${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}" 2>pull_err.log; then
+            echo "::error::Fail-closed: Failed to pull staging image from ACR for image configuration inspection." >&2
+            cat pull_err.log >&2
+            exit 1
+          fi
+
+          echo "Inspecting image configuration labels via docker inspect..."
+          LABELS_JSON=$(docker inspect --format '{{json .Config.Labels}}' "${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}" 2>inspect_err.log || true)
+
+          if [ -z "${LABELS_JSON}" ] || [ "${LABELS_JSON}" = "null" ]; then
+            echo "::error::Fail-closed: Image configuration labels could not be retrieved from '${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}'." >&2
+            cat inspect_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          raw_labels = """${LABELS_JSON}""".strip()
+          try:
+              labels = json.loads(raw_labels) if raw_labels else {}
+          except Exception as e:
+              print(f"::error::Failed to parse OCI labels JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          expected_sha = os.environ["COMMIT_SHA"].strip().lower()
+          actual_revision = (labels.get("org.opencontainers.image.revision") or "").strip().lower()
+
+          print(f"Expected Source Commit SHA:  {expected_sha}")
+          print(f"OCI Image Revision Label:    {actual_revision or 'NONE'}")
+
+          if not actual_revision:
+              print("::error::Fail-closed: Image is missing required OCI label 'org.opencontainers.image.revision'. Deployment aborted.", file=sys.stderr)
+              sys.exit(1)
+
+          if actual_revision != expected_sha:
+              print(f"::error::Fail-closed: Provenance mismatch! Image revision label '{actual_revision}' does not match expected commit SHA '{expected_sha}'. Deployment aborted.", file=sys.stderr)
+              sys.exit(1)
+
+          print("Image provenance verification PASSED: OCI revision label strictly matches source commit SHA.")
+          PYEOF
+
+          echo "Immutable deployment target: ${PINNED_IMAGE}"
+
+      - name: 5. Deploy Immutable Digest & Scoped Configuration
+        run: |
+          set -euo pipefail
+          echo "Updating '${STAGING_APP_NAME}' with cryptographic digest '${PINNED_IMAGE}'..."
+
+          az containerapp update \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --image "${PINNED_IMAGE}" \
+            --set-env-vars \
+              NODE_ENV="production" \
+              PORT="3000" \
+              REEVA_ENABLE_INSTAGRAM="true" \
+              REEVA_ENABLE_TIKTOK="false" \
+              REEVA_ENABLE_FACEBOOK="false" \
+              REEVA_ENABLE_AUDIO_ONLY="false" \
+              MAX_GLOBAL_EXTRACTION_CONCURRENCY="3" \
+              MAX_IP_EXTRACTION_CONCURRENCY="2" \
+              MAX_GLOBAL_STREAM_CONCURRENCY="10" \
+              MAX_IP_STREAM_CONCURRENCY="3"
+
+          echo "Deployment update command completed successfully."
+
+      - name: 6. Verify Staging Ingress & Live Endpoints
+        run: |
+          set -euo pipefail
+          echo "Auditing post-deployment staging container app..."
+          az containerapp show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            -o json > post_deploy_staging.json
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("post_deploy_staging.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          props = app.get("properties") or {}
+          if props.get("provisioningState") != "Succeeded":
+              print(f"::error::Staging app provisioningState is '{props.get('provisioningState')}'.", file=sys.stderr)
+              sys.exit(1)
+
+          ingress = (props.get("configuration") or {}).get("ingress") or {}
+          fqdn = ingress.get("fqdn")
+          if not fqdn:
+              print("::error::Staging app has no active ingress FQDN.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Staging Ingress FQDN: https://{fqdn}")
+          print(f"Active Revision:      {props.get('latestRevisionName')}")
+          with open("staging_fqdn.txt", "w", encoding="utf-8") as out:
+              out.write(fqdn)
+          PYEOF
+
+          STAGING_FQDN=$(cat staging_fqdn.txt)
+
+          echo "Waiting 10s for container startup and readiness probes..."
+          sleep 10
+
+          echo "Testing health probe: https://${STAGING_FQDN}/health"
+          curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/health"
+          echo ""
+
+          echo "Testing readiness probe: https://${STAGING_FQDN}/ready"
+          curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/ready"
+          echo ""
+
+          echo "Testing capabilities: https://${STAGING_FQDN}/api/capabilities"
+          CAP_JSON=$(curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/api/capabilities")
+          echo "Capabilities response: ${CAP_JSON}"
+
+          # Verify Instagram feature gate is active in staging
+          if ! echo "${CAP_JSON}" | grep -q '"instagram":true'; then
+            echo "::error::Verification failed: Instagram feature gate is not enabled in staging!" >&2
+            exit 1
+          fi
+          echo "Confirmed: 'instagram: true' is active on staging."
+
+      - name: 7. Generate Staging Deployment Summary
+        if: always()
+        run: |
+          cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Staging Deployment Summary
+
+          * **Target Application:** \`${STAGING_APP_NAME}\` (Dedicated Staging)
+          * **Environment:** \`${EXPECTED_ENV_NAME}\` (WorkloadProfiles / Consumption)
+          * **Source Git Commit SHA:** \`${COMMIT_SHA:-Unset}\`
+          * **Deterministic Staging Tag:** \`${EXPECTED_STAGING_TAG:-Unset}\`
+          * **Cryptographic Image Digest:** \`${IMAGE_DIGEST:-Unresolved}\`
+          * **Deployed Reference:** \`${PINNED_IMAGE:-Unresolved}\`
+          * **Container Runtime Port:** \`3000\`
+          * **Ingress IP Restrictions:** \`Enforced\`
+          * **Instagram Feature Gate:** \`true\` (Active on staging only)
+          * **Production Application:** \`${PROD_APP_NAME}\` (Untouched, Unchanged)
+
+          ### Live Staging Acceptance Endpoints
+          * **Frontend UI:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/\`
+          * **Capabilities Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/api/capabilities\`
+          * **Readiness Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/ready\`
+          * **Health Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/health\`
+          EOF

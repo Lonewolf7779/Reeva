@@ -16,6 +16,11 @@ on:
         required: true
         default: true
         type: boolean
+      publish_staging_image:
+        description: "Explicitly build and publish commit-pinned staging image (staging-<full-sha>)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   id-token: write
@@ -65,6 +70,23 @@ jobs:
           echo "FULL_IMAGE=${FULL_IMAGE}" >> "$GITHUB_ENV"
           echo "Target Docker image tag validated: ${RAW_TAG}"
           echo "Full target image reference: ${FULL_IMAGE}"
+
+          # Establish deterministic source-to-image provenance ONLY when explicitly requested:
+          PUBLISH_STAGING="${{ inputs.publish_staging_image == true }}"
+          echo "PUBLISH_STAGING=${PUBLISH_STAGING}" >> "$GITHUB_ENV"
+
+          if [ "${PUBLISH_STAGING}" = "true" ]; then
+            COMMIT_SHA="${GITHUB_SHA}"
+            STAGING_TAG="staging-${COMMIT_SHA}"
+            STAGING_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${STAGING_TAG}"
+            echo "COMMIT_SHA=${COMMIT_SHA}" >> "$GITHUB_ENV"
+            echo "STAGING_TAG=${STAGING_TAG}" >> "$GITHUB_ENV"
+            echo "STAGING_IMAGE=${STAGING_IMAGE}" >> "$GITHUB_ENV"
+            echo "Explicit staging build requested for commit ${COMMIT_SHA}."
+            echo "Deterministic staging image reference: ${STAGING_IMAGE}"
+          else
+            echo "Non-staging build. Preserving standard tag-only build behavior (no staging tags published)."
+          fi
 
       - name: Verify root Dockerfile exists
         run: |
@@ -133,25 +155,69 @@ jobs:
         run: |
           set -euo pipefail
           echo "Building Docker image: ${FULL_IMAGE} for platform linux/amd64..."
-          docker build \
-            --platform=linux/amd64 \
-            -t "${FULL_IMAGE}" \
-            .
-          echo "Image build complete."
-          docker images "${FULL_IMAGE}"
+          if [ "${PUBLISH_STAGING}" = "true" ]; then
+            echo "Attaching deterministic commit label: org.opencontainers.image.revision=${COMMIT_SHA}"
+            docker build \
+              --platform=linux/amd64 \
+              --label "org.opencontainers.image.revision=${COMMIT_SHA}" \
+              -t "${FULL_IMAGE}" \
+              -t "${STAGING_IMAGE}" \
+              .
+            echo "Image build complete for primary and staging tags."
+            docker images "${FULL_IMAGE}"
+            docker images "${STAGING_IMAGE}"
+          else
+            docker build \
+              --platform=linux/amd64 \
+              -t "${FULL_IMAGE}" \
+              .
+            echo "Standard image build complete."
+            docker images "${FULL_IMAGE}"
+          fi
 
       - name: Push image to Azure Container Registry
         run: |
           set -euo pipefail
-          echo "Pushing ${FULL_IMAGE} to ACR..."
+          echo "Pushing primary image ${FULL_IMAGE} to ACR..."
           docker push "${FULL_IMAGE}"
-          echo "Docker push succeeded."
+
+          if [ "${PUBLISH_STAGING}" = "true" ]; then
+            echo "Pushing deterministic staging image ${STAGING_IMAGE} to ACR..."
+            docker push "${STAGING_IMAGE}"
+            echo "Querying published staging image manifest digest..."
+            STAGING_DIGEST=$(az acr manifest show-metadata --name "reeva:${STAGING_TAG}" --registry "${ACR_NAME}" --query "digest" -o tsv 2>/dev/null | tr -d '\r' || true)
+            echo "STAGING_DIGEST=${STAGING_DIGEST}" >> "$GITHUB_ENV"
+            echo "Published staging digest: ${STAGING_DIGEST}"
+            echo "Docker push succeeded for both primary and staging tags."
+          else
+            echo "Standard Docker push succeeded."
+          fi
 
       - name: Generate deployment summary
         if: always()
         run: |
-          cat << EOF >> "$GITHUB_STEP_SUMMARY"
-          ## Azure Container Registry Build & Push Summary
+          if [ "${PUBLISH_STAGING:-false}" = "true" ]; then
+            cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Container Registry Build & Push Summary (Staging Build)
+
+          * **Trigger Event:** \`${{ github.event_name }}\`
+          * **Source Commit SHA:** \`${COMMIT_SHA}\`
+          * **Registry Login Server:** \`${ACR_LOGIN_SERVER}\`
+          * **Primary Image:** \`${IMAGE_NAME}\`
+          * **Requested Tag:** \`${VALIDATED_TAG:-${{ inputs.image_tag || 'mobile-test' }}}\`
+          * **Deterministic Staging Tag:** \`${STAGING_TAG}\`
+          * **Published Staging Digest:** \`${STAGING_DIGEST:-Captured in ACR}\`
+          * **Staging Image Reference:** \`${STAGING_IMAGE}\`
+          * **Target Architecture:** \`linux/amd64\`
+          * **OCI Revision Label:** \`org.opencontainers.image.revision=${COMMIT_SHA}\`
+          * **Authentication Method:** Azure OIDC (Passwordless Federated Identity)
+
+          ### Staging Acceptance Deployment
+          Deploy this verified staging image using \`deploy-staging-aca.yml\` with commit SHA: \`${COMMIT_SHA}\`.
+          EOF
+          else
+            cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Container Registry Build & Push Summary (Standard Build)
 
           * **Trigger Event:** \`${{ github.event_name }}\`
           * **Registry Login Server:** \`${ACR_LOGIN_SERVER}\`
@@ -159,14 +225,7 @@ jobs:
           * **Tag:** \`${VALIDATED_TAG:-${{ inputs.image_tag || 'mobile-test' }}}\`
           * **Full Image Reference:** \`${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}\`
           * **Target Architecture:** \`linux/amd64\`
+          * **Staging Image Tag Published:** \`No (non-staging build)\`
           * **Authentication Method:** Azure OIDC (Passwordless Federated Identity)
-
-          ### Next Step: Azure Container App Deployment
-          Deploy this container image to your Azure Container App using:
-          \`\`\`bash
-          az containerapp update \\
-            --name <container-app-name> \\
-            --resource-group reeva-rg \\
-            --image ${FULL_IMAGE:-${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${{ inputs.image_tag || 'mobile-test' }}}
-          \`\`\`
           EOF
+          fi
