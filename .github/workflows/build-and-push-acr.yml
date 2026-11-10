@@ -1,9 +1,6 @@
 name: Build and Push to Azure Container Registry
 
 on:
-  push:
-    branches:
-      - phase-4.2-production-platform-gates
   workflow_dispatch:
     inputs:
       image_tag:
