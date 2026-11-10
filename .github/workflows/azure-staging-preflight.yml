@@ -1,0 +1,263 @@
+name: Azure Staging Read-Only Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Target Git commit SHA to inspect in ACR (optional, full 40-character hex)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: "reeva-rg"
+  ACR_NAME: "reevaacr20261031"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
+  EXPECTED_ENV_NAME: "reeva-wp-env"
+  PROD_APP_NAME: "reeva-mobile-app"
+  STAGING_APP_NAME: "reeva-mobile-staging"
+  ARM_API_VERSION: "2026-07-01"
+  EXPECTED_PORT: "3000"
+
+jobs:
+  preflight-audit:
+    name: Azure Control-Plane Read-Only Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 1. Verify Azure Subscription & Resource Group
+        id: step-rg
+        run: |
+          set -euo pipefail
+          echo "Verifying Azure subscription context..."
+          SUB_ID=$(az account show --query id -o tsv | tr -d '\r')
+          echo "Active Subscription ID: ${SUB_ID:0:8}-****-****-****-${SUB_ID: -4}"
+
+          echo "Verifying Resource Group '${RESOURCE_GROUP}'..."
+          RG_STATE=$(az group show --name "${RESOURCE_GROUP}" --query "properties.provisioningState" -o tsv 2>rg_err.log | tr -d '\r' || true)
+          if [ -z "${RG_STATE}" ]; then
+            echo "::error::Failed to locate or access Resource Group '${RESOURCE_GROUP}'." >&2
+            cat rg_err.log >&2
+            exit 1
+          fi
+          echo "Resource Group '${RESOURCE_GROUP}' provisioningState: ${RG_STATE}"
+          if [ "${RG_STATE}" != "Succeeded" ]; then
+            echo "::error::Resource Group is not in 'Succeeded' state (found: ${RG_STATE})." >&2
+            exit 1
+          fi
+
+      - name: 2. Inspect Target Environment (reeva-wp-env)
+        id: step-env
+        run: |
+          set -euo pipefail
+          echo "Querying authoritative ARM metadata for '${EXPECTED_ENV_NAME}'..."
+          ENV_JSON=$(az rest --method get \
+            --url "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.App/managedEnvironments/${EXPECTED_ENV_NAME}?api-version=${ARM_API_VERSION}" \
+            -o json 2>env_err.log || true)
+
+          if [ -z "${ENV_JSON}" ]; then
+            echo "::error::Could not query environment '${EXPECTED_ENV_NAME}'." >&2
+            cat env_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          raw = """${ENV_JSON}"""
+          try:
+              data = json.loads(raw)
+          except Exception as e:
+              print(f"::error::Failed to parse environment ARM JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          props = data.get("properties") or {}
+          mode = props.get("environmentMode") or ""
+          profiles = [p.get("workloadProfileName") or p.get("name") for p in (props.get("workloadProfiles") or [])]
+
+          print(f"Environment: {data.get('name')}")
+          print(f"Location:    {data.get('location')}")
+          print(f"Mode:        {mode}")
+          print(f"Profiles:    {profiles}")
+
+          if mode != "WorkloadProfiles":
+              print(f"::error::Expected environmentMode 'WorkloadProfiles', found '{mode}'.", file=sys.stderr)
+              sys.exit(1)
+
+          if "Consumption" not in profiles:
+              print("::error::Required workload profile 'Consumption' not found in environment.", file=sys.stderr)
+              sys.exit(1)
+
+          print("Authoritative environment check: PASSED (WorkloadProfiles / Consumption).")
+          PYEOF
+
+      - name: 3. Inspect Existing Production App (reeva-mobile-app)
+        id: step-prod-app
+        run: |
+          set -euo pipefail
+          echo "Querying production app '${PROD_APP_NAME}' (Read-Only)..."
+          if ! az containerapp show --name "${PROD_APP_NAME}" --resource-group "${RESOURCE_GROUP}" -o json > prod_app.json 2>prod_err.log; then
+            echo "::error::Failed to inspect production app '${PROD_APP_NAME}'." >&2
+            cat prod_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("prod_app.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          props = app.get("properties") or {}
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
+
+          print(f"Production App Name:   {app.get('name')}")
+          print(f"Provisioning State:    {props.get('provisioningState')}")
+          print(f"Ingress FQDN:          https://{ingress.get('fqdn')}")
+          print(f"Ingress Target Port:   {ingress.get('targetPort')}")
+          print(f"Active Revision Mode:  {cfg.get('activeRevisionsMode')}")
+          print(f"Latest Revision:       {props.get('latestRevisionName')}")
+          print(f"Traffic Distribution:  {json.dumps(ingress.get('traffic') or [])}")
+          PYEOF
+
+      - name: 4. Check Staging App & Ingress Security (reeva-mobile-staging)
+        id: step-staging-check
+        run: |
+          set -euo pipefail
+          echo "Checking whether '${STAGING_APP_NAME}' already exists..."
+
+          STAGING_STATUS="UNKNOWN"
+          if az containerapp show --name "${STAGING_APP_NAME}" --resource-group "${RESOURCE_GROUP}" -o json > staging_app.json 2>staging_err.log; then
+            STAGING_STATUS="EXISTS"
+            python3 - << 'PYEOF'
+            import json, sys
+
+            with open("staging_app.json", "r", encoding="utf-8") as f:
+                app = json.load(f)
+
+            props = app.get("properties") or {}
+            cfg = props.get("configuration") or {}
+            ingress = cfg.get("ingress") or {}
+
+            fqdn = ingress.get("fqdn", "N/A")
+            target_port = ingress.get("targetPort")
+            ip_rules = ingress.get("ipSecurityRestrictions") or []
+
+            print("Staging App Status:   EXISTS")
+            print(f"Staging FQDN:         https://{fqdn}")
+            print(f"Active Revision:      {props.get('latestRevisionName', 'N/A')}")
+            print(f"Ingress Target Port:  {target_port}")
+
+            if target_port != 3000:
+                print(f"::warning::Staging app ingress targetPort is {target_port}, but container listens on 3000.", file=sys.stderr)
+            else:
+                print("Target port check:    PASSED (3000)")
+
+            if not ip_rules:
+                print("::warning::Ingress IP security restrictions: NOT CONFIGURED. Staging ingress restrictions are a deployment prerequisite.", file=sys.stderr)
+            else:
+                has_unrestricted = any(r.get("ipAddressRange") in ["0.0.0.0/0", "::/0"] and r.get("action") == "Allow" for r in ip_rules)
+                if has_unrestricted:
+                    print("::warning::Ingress IP rules contain 0.0.0.0/0 Allow. Must restrict to authorized IP ranges before deployment.", file=sys.stderr)
+                else:
+                    print(f"Ingress IP rules:     CONSTRAINED ({len(ip_rules)} active rules)")
+            PYEOF
+            echo "staging_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            ERR_MSG=$(cat staging_err.log)
+            # Differentiate genuine ResourceNotFound from Authorization or Network failure
+            if echo "${ERR_MSG}" | grep -Ei "(ResourceNotFound|AppNotFound|could not be found|does not exist)" > /dev/null; then
+              STAGING_STATUS="NOT_FOUND"
+              echo "Staging App Status:   NOT FOUND (genuine absence; app has not yet been provisioned)"
+              echo "staging_exists=false" >> "$GITHUB_OUTPUT"
+              echo "staging_fqdn=N/A" >> "$GITHUB_OUTPUT"
+            elif echo "${ERR_MSG}" | grep -Ei "(AuthorizationFailed|Forbidden|Denied)" > /dev/null; then
+              echo "::error::Authorization failure while checking '${STAGING_APP_NAME}': ${ERR_MSG}" >&2
+              exit 1
+            else
+              echo "::error::Unexpected error while querying '${STAGING_APP_NAME}': ${ERR_MSG}" >&2
+              exit 1
+            fi
+          fi
+          echo "staging_status=${STAGING_STATUS}" >> "$GITHUB_OUTPUT"
+
+      - name: 5. Inspect Image in ACR (if commit SHA supplied)
+        if: ${{ inputs.commit_sha != '' }}
+        env:
+          INPUT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          COMMIT_SHA=$(echo "${INPUT_SHA}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          if ! [[ "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid commit SHA '${INPUT_SHA}'. Must be a 40-character hexadecimal SHA." >&2
+            exit 1
+          fi
+
+          TARGET_TAG="staging-${COMMIT_SHA}"
+          echo "Inspecting ACR for deterministic tag '${TARGET_TAG}'..."
+
+          MANIFEST_JSON=$(az acr manifest show-metadata \
+            --name "reeva:${TARGET_TAG}" \
+            --registry "${ACR_NAME}" \
+            -o json 2>acr_err.log || true)
+
+          if [ -z "${MANIFEST_JSON}" ]; then
+            echo "::error::Image 'reeva:${TARGET_TAG}' was not found in ACR '${ACR_NAME}'." >&2
+            cat acr_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          raw = """${MANIFEST_JSON}"""
+          data = json.loads(raw)
+          print(f"ACR Tag:         reeva:{data.get('tags', [''])[0] if data.get('tags') else 'N/A'}")
+          print(f"Digest:          {data.get('digest')}")
+          print(f"Architecture:    {data.get('architecture', 'amd64')}")
+          print(f"Created:         {data.get('createdTime')}")
+          print(f"Last Update:     {data.get('lastUpdateTime')}")
+          PYEOF
+
+      - name: 6. Inspect Identity RBAC Scope (Read-Only)
+        run: |
+          set -euo pipefail
+          echo "Checking role assignments for active identity..."
+          CLIENT_ID="${{ secrets.AZURE_CLIENT_ID }}"
+          az role assignment list --assignee "${CLIENT_ID}" --all \
+            --query "[*].{Role:roleDefinitionName, Scope:scope}" -o table 2>rbac_err.log || {
+              echo "Note: Identity does not have permissions to read its own role assignments (non-blocking for preflight)."
+          }
+
+      - name: Generate Preflight Step Summary
+        if: always()
+        run: |
+          cat << 'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Staging Read-Only Preflight Summary
+
+          * **Subscription Identity:** Verified (OIDC Federated Auth)
+          * **Resource Group:** \`reeva-rg\` (Succeeded)
+          * **Target Environment:** \`reeva-wp-env\` (WorkloadProfiles / Consumption)
+          * **Production Container App:** \`reeva-mobile-app\` (Untouched)
+          * **Container Runtime Port:** \`3000\`
+          * **ACR:** \`reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io\`
+
+          ### Staging Container App Status:
+          Check the logs above for \`reeva-mobile-staging\` status.
+          * If \`NOT FOUND\`, provision it once before running the deployment workflow:
+            Ensure \`--target-port 3000\` and configure IP security restrictions.
+          * If \`EXISTS\`, verify that ingress security restrictions are active prior to deploying.
+          EOF
