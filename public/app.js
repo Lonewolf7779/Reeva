@@ -417,6 +417,9 @@ function createAppController(options = {}) {
         if (typeof ui.hideEmbed === "function") {
             ui.hideEmbed();
         }
+        if (typeof ui.hideCarousel === "function") {
+            ui.hideCarousel();
+        }
         ui.setDownloadButtonVisible(false);
 
         try {
@@ -511,17 +514,30 @@ function createAppController(options = {}) {
             if (companion && companionLib) {
                 companion.triggerState(companionLib.STATES.SUCCESS, 5000);
             }
-            state.setMediaUrls({
-                streamUrl: result.streamUrl,
-                downloadUrl: result.downloadUrl
-            });
 
             if (typeof ui.hideEmbed === "function") {
                 ui.hideEmbed();
             }
-            ui.setLog(t("status.success", {}, renderLang), "success");
-            ui.showPreview(result.streamUrl);
-            ui.setDownloadButtonVisible(true);
+
+            if (Array.isArray(result.items) && result.items.length > 0 && typeof ui.showCarousel === "function") {
+                // Carousel Mode
+                ui.hidePreview();
+                ui.setDownloadButtonVisible(false);
+                ui.showCarousel(result.items);
+                ui.setLog(`✅ Found ${result.items.length} items in carousel.`, "success");
+            } else {
+                // Single-Media Mode
+                if (typeof ui.hideCarousel === "function") {
+                    ui.hideCarousel();
+                }
+                state.setMediaUrls({
+                    streamUrl: result.streamUrl,
+                    downloadUrl: result.downloadUrl
+                });
+                ui.setLog(t("status.success", {}, renderLang), "success");
+                ui.showPreview(result.streamUrl);
+                ui.setDownloadButtonVisible(true);
+            }
 
         } catch (err) {
             if (!state.isCurrentRequest(requestId)) {

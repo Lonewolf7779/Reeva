@@ -18,8 +18,9 @@
      * @param {Document} [doc]
      * @returns {object}
      */
-    function createUiController(doc) {
+    function createUiController(doc, win) {
         const documentRef = doc || (typeof document !== "undefined" ? document : null);
+        const windowRef = win || (typeof window !== "undefined" ? window : (typeof globalThis !== "undefined" ? globalThis : null));
         if (!documentRef) {
             return null;
         }
@@ -36,6 +37,7 @@
             log: documentRef.getElementById("log"),
             preview: documentRef.getElementById("preview"),
             embedContainer: documentRef.getElementById("embed-container"),
+            carouselContainer: documentRef.getElementById("carousel-container"),
             consent: documentRef.getElementById("consent"),
             consentText: documentRef.getElementById("consent-text"),
             whyConsent: documentRef.getElementById("why-consent"),
@@ -183,6 +185,146 @@
         }
 
         /**
+         * Renders all carousel items in a responsive grid with individual media previews and download buttons.
+         *
+         * @param {Array<object>} items
+         */
+        function showCarousel(items) {
+            if (!elements.carouselContainer || !Array.isArray(items) || items.length === 0) return;
+
+            hidePreview();
+            hideEmbed();
+            setDownloadButtonVisible(false);
+
+            while (elements.carouselContainer.firstChild) {
+                elements.carouselContainer.removeChild(elements.carouselContainer.firstChild);
+            }
+
+            const grid = documentRef.createElement("div");
+            grid.className = "carousel-grid";
+
+            const total = items.length;
+
+            items.forEach((item, idx) => {
+                const card = documentRef.createElement("div");
+                card.className = "carousel-card";
+
+                // Header with position and type badge
+                const header = documentRef.createElement("div");
+                header.className = "carousel-card-header";
+
+                const posBadge = documentRef.createElement("span");
+                posBadge.className = "carousel-position-badge";
+                posBadge.textContent = `${idx + 1} of ${total}`;
+                header.appendChild(posBadge);
+
+                const typeBadge = documentRef.createElement("span");
+                const isVideo = item.type === "video";
+                typeBadge.className = `carousel-type-badge ${isVideo ? "badge-video" : "badge-image"}`;
+                typeBadge.textContent = isVideo ? "Video" : "Photo";
+                header.appendChild(typeBadge);
+
+                card.appendChild(header);
+
+                // Media preview wrapper
+                const mediaWrapper = documentRef.createElement("div");
+                mediaWrapper.className = "carousel-media-wrapper";
+
+                if (isVideo) {
+                    const videoEl = documentRef.createElement("video");
+                    videoEl.controls = true;
+                    videoEl.playsInline = true;
+                    videoEl.preload = "none";
+                    videoEl.setAttribute("controlsList", "nodownload");
+                    videoEl.setAttribute("aria-label", `Video ${idx + 1} of ${total}`);
+                    if (item.thumbnailUrl) {
+                        if (typeof windowRef.IntersectionObserver === "function") {
+                            videoEl.dataset.poster = item.thumbnailUrl;
+                            const observer = new windowRef.IntersectionObserver((entries, obs) => {
+                                for (const entry of entries) {
+                                    if (entry.isIntersecting) {
+                                        if (videoEl.dataset.poster) {
+                                            videoEl.poster = videoEl.dataset.poster;
+                                            delete videoEl.dataset.poster;
+                                        }
+                                        obs.unobserve(videoEl);
+                                    }
+                                }
+                            }, { rootMargin: "200px 0px" });
+                            observer.observe(videoEl);
+                        } else {
+                            videoEl.poster = item.thumbnailUrl;
+                        }
+                    }
+                    if (item.streamUrl) {
+                        videoEl.src = item.streamUrl;
+                    }
+                    mediaWrapper.appendChild(videoEl);
+                } else {
+                    const imgEl = documentRef.createElement("img");
+                    imgEl.loading = "lazy";
+                    imgEl.alt = `Carousel item ${idx + 1} of ${total}`;
+                    imgEl.src = item.thumbnailUrl || item.streamUrl;
+                    mediaWrapper.appendChild(imgEl);
+                }
+
+                card.appendChild(mediaWrapper);
+
+                // Footer with individual download button
+                const footer = documentRef.createElement("div");
+                footer.className = "carousel-card-footer";
+
+                const downloadLink = documentRef.createElement("a");
+                downloadLink.className = "action carousel-download-btn";
+                downloadLink.href = item.downloadUrl || item.streamUrl;
+                downloadLink.setAttribute("download", `reeva_instagram_${String(idx + 1).padStart(2, "0")}.${isVideo ? "mp4" : "jpg"}`);
+                downloadLink.textContent = isVideo ? "Download Video" : "Download Photo";
+                downloadLink.setAttribute("aria-label", `Download item ${idx + 1} of ${total}`);
+
+                // Prevent rapid repeated clicks
+                let isDownloading = false;
+                downloadLink.addEventListener("click", () => {
+                    if (isDownloading) return;
+                    isDownloading = true;
+                    setTimeout(() => { isDownloading = false; }, 2000);
+                });
+
+                footer.appendChild(downloadLink);
+                card.appendChild(footer);
+
+                grid.appendChild(card);
+            });
+
+            elements.carouselContainer.appendChild(grid);
+            elements.carouselContainer.classList.remove("hidden");
+            elements.carouselContainer.style.display = "flex";
+        }
+
+        /**
+         * Hides and resets the carousel container.
+         */
+        function hideCarousel() {
+            if (!elements.carouselContainer) return;
+
+            // Pause any playing videos
+            try {
+                const videos = elements.carouselContainer.querySelectorAll("video");
+                videos.forEach((v) => {
+                    if (typeof v.pause === "function") {
+                        v.pause();
+                    }
+                    v.removeAttribute("src");
+                });
+            } catch (_) {}
+
+            while (elements.carouselContainer.firstChild) {
+                elements.carouselContainer.removeChild(elements.carouselContainer.firstChild);
+            }
+            elements.carouselContainer.classList.add("hidden");
+            elements.carouselContainer.style.display = "none";
+        }
+
+        /**
          * Toggles the visibility of the Download action button.
          *
          * @param {boolean} show
@@ -317,6 +459,8 @@
             hidePreview,
             showEmbed,
             hideEmbed,
+            showCarousel,
+            hideCarousel,
             setDownloadButtonVisible,
             setActivePlatform,
             getUrlInput,

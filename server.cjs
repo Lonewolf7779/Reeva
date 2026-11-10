@@ -435,14 +435,61 @@ app.get("/api/download/:platform", extractionLimiter, extractionConcurrencyLimit
             mode: media.mode || null
         });
 
-        // Return opaque media references (fully matching existing frontend expectations)
-        res.json({
+        // Register individual carousel items if present
+        let carouselItems = undefined;
+        if (Array.isArray(media.items) && media.items.length > 0) {
+            carouselItems = media.items.map((item, idx) => {
+                const itemIndex = typeof item.index === "number" ? item.index + 1 : idx + 1;
+                const childReg = defaultRegistry.registerMedia({
+                    upstreamUrl: item.url,
+                    platform: media.platform,
+                    type: item.type || "image",
+                    title: `${media.title || "Media"} (${itemIndex} of ${media.items.length})`,
+                    localFilePath: null,
+                    mode: null,
+                    carouselIndex: itemIndex
+                });
+
+                let thumbStreamUrl = null;
+                if (item.thumbnailUrl && typeof item.thumbnailUrl === "string") {
+                    const thumbReg = defaultRegistry.registerMedia({
+                        upstreamUrl: item.thumbnailUrl,
+                        platform: media.platform,
+                        type: "image",
+                        title: `${media.title || "Thumbnail"} (${idx + 1})`,
+                        localFilePath: null,
+                        mode: null
+                    });
+                    thumbStreamUrl = `/api/media/${thumbReg.id}`;
+                }
+
+                return {
+                    id: childReg.id,
+                    index: typeof item.index === "number" ? item.index : idx,
+                    type: item.type || "image",
+                    width: item.width || null,
+                    height: item.height || null,
+                    streamUrl: `/api/media/${childReg.id}`,
+                    downloadUrl: `/api/media/${childReg.id}?download=1`,
+                    thumbnailUrl: thumbStreamUrl
+                };
+            });
+        }
+
+        const responsePayload = {
             media: registered,
             streamUrl: `/api/media/${registered.id}`,
             downloadUrl: `/api/media/${registered.id}?download=1`,
             // Backward-compatibility field
             videoUrl: `/api/media/${registered.id}`
-        });
+        };
+
+        if (carouselItems && carouselItems.length > 0) {
+            responsePayload.items = carouselItems;
+            responsePayload.itemCount = carouselItems.length;
+        }
+
+        res.json(responsePayload);
 
     } catch (err) {
         const sanitized = sanitizePublicError(err, "EXTRACTION_FAILED", "We could not retrieve media from this link.", 502);
@@ -745,8 +792,14 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             }
 
             const { contentType, fileExt } = await sniffLocalMediaFormat(resolvedFilePath, mediaEntry.type);
+            let filename = `reeva_${mediaEntry.platform || "media"}`;
+            if (typeof mediaEntry.carouselIndex === "number" && mediaEntry.carouselIndex > 0) {
+                filename += `_${String(mediaEntry.carouselIndex).padStart(2, "0")}`;
+            }
+            filename += `.${fileExt}`;
+
             const disposition = isDownload
-                ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
+                ? `attachment; filename="${filename}"`
                 : "inline";
 
             res.setHeader("Content-Type", contentType);
@@ -882,8 +935,14 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         } else if (rawContentType.includes("ogg")) {
             fileExt = mediaEntry.type === "audio" ? "ogg" : "ogv";
         }
+        let filename = `reeva_${mediaEntry.platform || "media"}`;
+        if (typeof mediaEntry.carouselIndex === "number" && mediaEntry.carouselIndex > 0) {
+            filename += `_${String(mediaEntry.carouselIndex).padStart(2, "0")}`;
+        }
+        filename += `.${fileExt}`;
+
         const disposition = isDownload
-            ? `attachment; filename="reeva_${mediaEntry.platform || "media"}.${fileExt}"`
+            ? `attachment; filename="${filename}"`
             : "inline";
 
         res.setHeader("Content-Type", rawContentType);
