@@ -49,8 +49,13 @@
             "status.not_found": "⚠️ Could not find a downloadable video for this link.",
             "status.network_error": "⚠️ Network error: {message}",
             "status.generic_error": "Failed to retrieve media. Please try again.",
+            "status.embed_success": "ℹ️ Official embedded player loaded. Direct downloads are restricted for this content.",
+            "status.embed_badge": "Official Embed",
+            "status.embed_unavailable": "⚠️ Could not load official player for this link.",
             "footer.disclaimer": "Disclaimer: This tool is for personal and educational use only.",
             "footer.copyright": "We never store or host media. All rights belong to their respective owners.",
+            "footer.privacy": "Privacy Policy",
+            "footer.terms": "Terms of Service",
             "aria.video_url": "Video URL",
             "aria.media_preview": "Media preview"
         }),
@@ -83,8 +88,13 @@
             "status.not_found": "⚠️ इस लिंक के लिए कोई डाउनलोड करने योग्य वीडियो नहीं मिला।",
             "status.network_error": "⚠️ नेटवर्क त्रुटि: {message}",
             "status.generic_error": "मीडिया प्राप्त करने में विफल। कृपया पुनः प्रयास करें।",
+            "status.embed_success": "ℹ️ आधिकारिक एम्बेडेड प्लेयर लोड हो गया। इस सामग्री के लिए सीधा डाउनलोड प्रतिबंधित है।",
+            "status.embed_badge": "आधिकारिक एम्बेड",
+            "status.embed_unavailable": "⚠️ इस लिंक के लिए आधिकारिक प्लेयर लोड नहीं किया जा सका।",
             "footer.disclaimer": "अस्वीकरण: यह उपकरण केवल व्यक्तिगत और शैक्षणिक उपयोग के लिए है।",
             "footer.copyright": "हम कभी भी मीडिया स्टोर या होस्ट नहीं करते हैं। सभी अधिकार उनके संबंधित स्वामियों के हैं।",
+            "footer.privacy": "गोपनीयता नीति",
+            "footer.terms": "सेवा की शर्तें",
             "aria.video_url": "वीडियो लिंक",
             "aria.media_preview": "मीडिया पूर्वावलोकन"
         })

@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Supported Platforms & Capability Matrix — Reeva</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Technical audit and platform capability matrix for Reeva. Learn which networks support direct file downloads versus official sandboxed embeds." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="Supported Platforms & Capability Matrix — Reeva" />
+    <meta property="og:description" content="Technical audit and platform capability matrix for Reeva. Learn which networks support direct file downloads versus official sandboxed embeds." />
+    <meta property="og:type" content="article" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Supported Platforms & Capability Matrix — Reeva" />
+    <meta name="twitter:description" content="Technical audit and platform capability matrix for Reeva. Learn which networks support direct file downloads versus official sandboxed embeds." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Site Header -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
+
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/" class="nav-link">Downloader</a>
+                <a href="/how-to-use.html" class="nav-link">How to Use</a>
+                <a href="/platforms.html" class="nav-link active">Platforms</a>
+                <a href="/faq.html" class="nav-link">FAQ</a>
+                <a href="/about.html" class="nav-link">About</a>
+            </nav>
+
+            <div class="header-controls">
+                <a href="/" class="back-link">← Return to Tool</a>
+            </div>
+        </header>
+
+        <!-- Main Body -->
+        <main class="main-content">
+            <article class="policy-card">
+                <header class="policy-header">
+                    <h1>Supported Platforms & Capability Matrix</h1>
+                    <p>Transparent technical audit of platform support, media formats, and access policies.</p>
+                </header>
+
+                <div class="policy-body">
+                    <section id="capabilities">
+                        <h2>1. Verified Capability Matrix</h2>
+                        <p>Unlike services that make false universal claims, Reeva maintains an honest, audited accounting of supported networks and retrieval modes:</p>
+                        
+                        <div class="capability-table-wrapper">
+                            <table class="capability-table" aria-label="Platform capabilities">
+                                <thead>
+                                    <tr>
+                                        <th>Platform</th>
+                                        <th>Status</th>
+                                        <th>Supported Formats</th>
+                                        <th>Retrieval Mode</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><strong>YouTube</strong></td>
+                                        <td><span class="badge-status badge-verified">Verified</span></td>
+                                        <td>MP4, WebM (Video & Audio)</td>
+                                        <td>Direct Binary Stream Download</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Twitter / X</strong></td>
+                                        <td><span class="badge-status badge-verified">Verified</span></td>
+                                        <td>MP4 (Up to 1080p)</td>
+                                        <td>Direct Binary Stream Download</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Pinterest</strong></td>
+                                        <td><span class="badge-status badge-verified">Verified</span></td>
+                                        <td>MP4 (Standard Video Pins)</td>
+                                        <td>Direct Binary Stream Download</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Generic Video</strong></td>
+                                        <td><span class="badge-status badge-verified">Verified</span></td>
+                                        <td>MP4, WebM (Direct URLs)</td>
+                                        <td>Direct HTTP Byte Streaming</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>TikTok</strong></td>
+                                        <td><span class="badge-status badge-fallback">Embed Fallback</span></td>
+                                        <td>MP4 or Sandboxed Player</td>
+                                        <td>Public Extraction with Official Embed Fallback</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Instagram</strong></td>
+                                        <td><span class="badge-status badge-fallback">Embed Fallback</span></td>
+                                        <td>MP4 or Sandboxed Player</td>
+                                        <td>Public Extraction with Official Embed Fallback</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Facebook</strong></td>
+                                        <td><span class="badge-status badge-fallback">Embed Fallback</span></td>
+                                        <td>MP4 or Sandboxed Player</td>
+                                        <td>Public Extraction with Official Embed Fallback</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2>2. Detailed Platform Breakdown</h2>
+                        
+                        <h3>YouTube</h3>
+                        <p>Reeva supports standard public YouTube videos, YouTube Shorts, and educational lectures. Format combinations are evaluated server-side to deliver synchronized video and audio streams. Playlists, live streams, and paid rental movies are not supported.</p>
+
+                        <h3>Twitter / X</h3>
+                        <p>Reeva queries official media syndication and CDN delivery endpoints to locate the highest available bitrate MP4 variant for public status tweets containing video attachments.</p>
+
+                        <h3>Pinterest</h3>
+                        <p>Reeva extracts direct video file streams from public Pinterest video pins across desktop and mobile sharing URLs.</p>
+
+                        <h3>Meta Platforms (Instagram & Facebook)</h3>
+                        <p>Reeva queries public metadata for Reels and public video posts. In production environments where access is permitted and unauthenticated media URLs are returned, direct downloads are initiated. When platform policies enforce authentication or access restrictions, Reeva automatically activates the official sandboxed embedded player.</p>
+
+                        <h3>TikTok</h3>
+                        <p>For public short-form videos outside geographically restricted regions, direct video files are streamed. In jurisdictions subject to national regulatory blocks or anti-scraping challenge pages, Reeva seamlessly presents the official sandboxed player.</p>
+                    </section>
+
+                    <section>
+                        <h2>3. Strictly Prohibited & Unsupported Content</h2>
+                        <ul>
+                            <li>Private accounts, secret boards, and followers-only posts.</li>
+                            <li>DRM-encrypted streams (Widevine, FairPlay, PlayReady).</li>
+                            <li>Paywalled streaming platforms (Netflix, Disney+, Hulu, Amazon Prime).</li>
+                            <li>Copyrighted commercial music tracks separated from their original context.</li>
+                        </ul>
+                    </section>
+                </div>
+            </article>
+
+            <!-- Reserved Advertisement Container (AdSense Readiness) -->
+            <aside class="ad-slot-editorial" aria-label="Sponsor Area">
+                <span class="ad-slot-label">Editorial Sponsorship</span>
+                <span class="ad-slot-placeholder">Reserved editorial sponsorship space &mdash; strictly separated from downloader controls</span>
+            </aside>
+        </main>
+
+        <!-- Site Footer -->
+        <footer class="site-footer">
+            <div class="footer-bottom">
+                <div class="footer-links">
+                    <a href="/privacy.html" class="footer-link">Privacy Policy</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/terms.html" class="footer-link">Terms of Service</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/copyright.html" class="footer-link">DMCA / Copyright</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/contact.html" class="footer-link">Contact</a>
+                </div>
+                <div class="footer-copy">
+                    <span>Disclaimer: This tool is for personal and educational use only.</span>
+                    <span>We never store or host media. All rights belong to their respective owners.</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+</body>
+
+</html>

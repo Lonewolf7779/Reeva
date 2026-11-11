@@ -18,8 +18,9 @@
      * @param {Document} [doc]
      * @returns {object}
      */
-    function createUiController(doc) {
+    function createUiController(doc, win) {
         const documentRef = doc || (typeof document !== "undefined" ? document : null);
+        const windowRef = win || (typeof window !== "undefined" ? window : (typeof globalThis !== "undefined" ? globalThis : null));
         if (!documentRef) {
             return null;
         }
@@ -35,11 +36,15 @@
             urlIn: documentRef.getElementById("url"),
             log: documentRef.getElementById("log"),
             preview: documentRef.getElementById("preview"),
+            embedContainer: documentRef.getElementById("embed-container"),
+            carouselContainer: documentRef.getElementById("carousel-container"),
             consent: documentRef.getElementById("consent"),
             consentText: documentRef.getElementById("consent-text"),
             whyConsent: documentRef.getElementById("why-consent"),
             footerDisclaimer: documentRef.getElementById("footer-disclaimer"),
             footerCopyright: documentRef.getElementById("footer-copyright"),
+            linkPrivacy: documentRef.getElementById("link-privacy"),
+            linkTerms: documentRef.getElementById("link-terms"),
             platformBtns: documentRef.querySelectorAll(".platform-btn")
         };
 
@@ -115,6 +120,208 @@
             elements.preview.removeAttribute("src");
             elements.preview.classList.add("hidden");
             elements.preview.style.display = "none";
+        }
+
+        /**
+         * Renders the official embedded player in the embed container with restrictive sandbox attributes.
+         *
+         * @param {object} embedData
+         */
+        function showEmbed(embedData) {
+            if (!elements.embedContainer || !embedData || !embedData.embedUrl) return;
+
+            // Clean previous children
+            while (elements.embedContainer.firstChild) {
+                elements.embedContainer.removeChild(elements.embedContainer.firstChild);
+            }
+
+            // Ensure native preview is hidden
+            hidePreview();
+            setDownloadButtonVisible(false);
+
+            // Construct notice badge using textContent and DOM APIs
+            const badge = documentRef.createElement("div");
+            badge.className = "embed-badge";
+
+            const tag = documentRef.createElement("span");
+            tag.className = "embed-badge-tag";
+            tag.textContent = "OFFICIAL EMBED";
+            badge.appendChild(tag);
+
+            const noticeText = documentRef.createTextNode(
+                embedData.notice || "Direct video file downloads are restricted by platform terms. An official embedded player is provided."
+            );
+            badge.appendChild(noticeText);
+            elements.embedContainer.appendChild(badge);
+
+            // Construct sandboxed iframe
+            const iframe = documentRef.createElement("iframe");
+            iframe.setAttribute("src", embedData.embedUrl);
+            iframe.setAttribute("title", embedData.title || "Embedded Media Player");
+            iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups");
+            iframe.setAttribute("allow", "fullscreen; picture-in-picture; autoplay; encrypted-media; web-share");
+            iframe.setAttribute("loading", "lazy");
+
+            const widthVal = embedData.width ? (typeof embedData.width === "number" ? `${embedData.width}px` : embedData.width) : "100%";
+            const heightVal = embedData.height ? (typeof embedData.height === "number" ? `${embedData.height}px` : embedData.height) : "480px";
+            iframe.style.width = widthVal;
+            iframe.style.height = heightVal;
+
+            elements.embedContainer.appendChild(iframe);
+            elements.embedContainer.classList.remove("hidden");
+            elements.embedContainer.style.display = "flex";
+        }
+
+        /**
+         * Hides and resets the official embedded player.
+         */
+        function hideEmbed() {
+            if (!elements.embedContainer) return;
+            while (elements.embedContainer.firstChild) {
+                elements.embedContainer.removeChild(elements.embedContainer.firstChild);
+            }
+            elements.embedContainer.classList.add("hidden");
+            elements.embedContainer.style.display = "none";
+        }
+
+        /**
+         * Renders all carousel items in a responsive grid with individual media previews and download buttons.
+         *
+         * @param {Array<object>} items
+         */
+        function showCarousel(items) {
+            if (!elements.carouselContainer || !Array.isArray(items) || items.length === 0) return;
+
+            hidePreview();
+            hideEmbed();
+            setDownloadButtonVisible(false);
+
+            while (elements.carouselContainer.firstChild) {
+                elements.carouselContainer.removeChild(elements.carouselContainer.firstChild);
+            }
+
+            const grid = documentRef.createElement("div");
+            grid.className = "carousel-grid";
+
+            const total = items.length;
+
+            items.forEach((item, idx) => {
+                const card = documentRef.createElement("div");
+                card.className = "carousel-card";
+
+                // Header with position and type badge
+                const header = documentRef.createElement("div");
+                header.className = "carousel-card-header";
+
+                const posBadge = documentRef.createElement("span");
+                posBadge.className = "carousel-position-badge";
+                posBadge.textContent = `${idx + 1} of ${total}`;
+                header.appendChild(posBadge);
+
+                const typeBadge = documentRef.createElement("span");
+                const isVideo = item.type === "video";
+                typeBadge.className = `carousel-type-badge ${isVideo ? "badge-video" : "badge-image"}`;
+                typeBadge.textContent = isVideo ? "Video" : "Photo";
+                header.appendChild(typeBadge);
+
+                card.appendChild(header);
+
+                // Media preview wrapper
+                const mediaWrapper = documentRef.createElement("div");
+                mediaWrapper.className = "carousel-media-wrapper";
+
+                if (isVideo) {
+                    const videoEl = documentRef.createElement("video");
+                    videoEl.controls = true;
+                    videoEl.playsInline = true;
+                    videoEl.preload = "none";
+                    videoEl.setAttribute("controlsList", "nodownload");
+                    videoEl.setAttribute("aria-label", `Video ${idx + 1} of ${total}`);
+                    if (item.thumbnailUrl) {
+                        if (typeof windowRef.IntersectionObserver === "function") {
+                            videoEl.dataset.poster = item.thumbnailUrl;
+                            const observer = new windowRef.IntersectionObserver((entries, obs) => {
+                                for (const entry of entries) {
+                                    if (entry.isIntersecting) {
+                                        if (videoEl.dataset.poster) {
+                                            videoEl.poster = videoEl.dataset.poster;
+                                            delete videoEl.dataset.poster;
+                                        }
+                                        obs.unobserve(videoEl);
+                                    }
+                                }
+                            }, { rootMargin: "200px 0px" });
+                            observer.observe(videoEl);
+                        } else {
+                            videoEl.poster = item.thumbnailUrl;
+                        }
+                    }
+                    if (item.streamUrl) {
+                        videoEl.src = item.streamUrl;
+                    }
+                    mediaWrapper.appendChild(videoEl);
+                } else {
+                    const imgEl = documentRef.createElement("img");
+                    imgEl.loading = "lazy";
+                    imgEl.alt = `Carousel item ${idx + 1} of ${total}`;
+                    imgEl.src = item.thumbnailUrl || item.streamUrl;
+                    mediaWrapper.appendChild(imgEl);
+                }
+
+                card.appendChild(mediaWrapper);
+
+                // Footer with individual download button
+                const footer = documentRef.createElement("div");
+                footer.className = "carousel-card-footer";
+
+                const downloadLink = documentRef.createElement("a");
+                downloadLink.className = "action carousel-download-btn";
+                downloadLink.href = item.downloadUrl || item.streamUrl;
+                downloadLink.setAttribute("download", `reeva_instagram_${String(idx + 1).padStart(2, "0")}.${isVideo ? "mp4" : "jpg"}`);
+                downloadLink.textContent = isVideo ? "Download Video" : "Download Photo";
+                downloadLink.setAttribute("aria-label", `Download item ${idx + 1} of ${total}`);
+
+                // Prevent rapid repeated clicks
+                let isDownloading = false;
+                downloadLink.addEventListener("click", () => {
+                    if (isDownloading) return;
+                    isDownloading = true;
+                    setTimeout(() => { isDownloading = false; }, 2000);
+                });
+
+                footer.appendChild(downloadLink);
+                card.appendChild(footer);
+
+                grid.appendChild(card);
+            });
+
+            elements.carouselContainer.appendChild(grid);
+            elements.carouselContainer.classList.remove("hidden");
+            elements.carouselContainer.style.display = "flex";
+        }
+
+        /**
+         * Hides and resets the carousel container.
+         */
+        function hideCarousel() {
+            if (!elements.carouselContainer) return;
+
+            // Pause any playing videos
+            try {
+                const videos = elements.carouselContainer.querySelectorAll("video");
+                videos.forEach((v) => {
+                    if (typeof v.pause === "function") {
+                        v.pause();
+                    }
+                    v.removeAttribute("src");
+                });
+            } catch (_) {}
+
+            while (elements.carouselContainer.firstChild) {
+                elements.carouselContainer.removeChild(elements.carouselContainer.firstChild);
+            }
+            elements.carouselContainer.classList.add("hidden");
+            elements.carouselContainer.style.display = "none";
         }
 
         /**
@@ -216,13 +423,23 @@
             // Footer text
             if (elements.footerDisclaimer) elements.footerDisclaimer.textContent = t("footer.disclaimer", {}, lang);
             if (elements.footerCopyright) elements.footerCopyright.textContent = t("footer.copyright", {}, lang);
+            if (elements.linkPrivacy) elements.linkPrivacy.textContent = t("footer.privacy", {}, lang);
+            if (elements.linkTerms) elements.linkTerms.textContent = t("footer.terms", {}, lang);
 
             // Platform buttons
             if (elements.platformBtns) {
                 elements.platformBtns.forEach((btn) => {
                     const platform = btn.dataset ? btn.dataset.platform : null;
                     if (platform) {
-                        btn.textContent = t(`platform.${platform}`, {}, lang);
+                        const labelText = t(`platform.${platform}`, {}, lang);
+                        btn.setAttribute("title", labelText);
+                        btn.setAttribute("aria-label", labelText);
+                        const labelSpan = btn.querySelector ? btn.querySelector(".platform-label") : null;
+                        if (labelSpan) {
+                            labelSpan.textContent = labelText;
+                        } else if (!btn.querySelector || !btn.querySelector("svg")) {
+                            btn.textContent = labelText;
+                        }
                     }
                 });
             }
@@ -240,6 +457,10 @@
             setLoading,
             showPreview,
             hidePreview,
+            showEmbed,
+            hideEmbed,
+            showCarousel,
+            hideCarousel,
             setDownloadButtonVisible,
             setActivePlatform,
             getUrlInput,

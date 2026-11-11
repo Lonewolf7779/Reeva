@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="utf-8" />
+    <title>How to Use Reeva — Step-by-Step Media Guide</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="description" content="Step-by-step instructions on copying public links, verifying stream resolutions, and downloading videos or playing embeds with Reeva." />
+    <meta name="theme-color" content="#0e0e10" />
+    <meta property="og:title" content="How to Use Reeva — Step-by-Step Media Guide" />
+    <meta property="og:description" content="Step-by-step instructions on copying public links, verifying stream resolutions, and downloading videos or playing embeds with Reeva." />
+    <meta property="og:type" content="article" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="How to Use Reeva — Step-by-Step Media Guide" />
+    <meta name="twitter:description" content="Step-by-step instructions on copying public links, verifying stream resolutions, and downloading videos or playing embeds with Reeva." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Site Header -->
+        <header class="site-header">
+            <a href="/" class="brand-wrapper" aria-label="Reeva Home">
+                <span class="brand-icon" aria-hidden="true">
+                    <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="32" height="32" rx="6" fill="currentColor" />
+                        <circle cx="16" cy="16" r="10" stroke="var(--bg-page)" stroke-width="2" />
+                        <path d="M13 11.5 L22 16 L13 20.5 Z" fill="var(--bg-page)" />
+                    </svg>
+                </span>
+                <span class="brand-name">Reeva</span>
+                <span class="brand-badge">Universal</span>
+            </a>
+
+            <nav class="site-nav" aria-label="Main Navigation">
+                <a href="/" class="nav-link">Downloader</a>
+                <a href="/how-to-use.html" class="nav-link active">How to Use</a>
+                <a href="/platforms.html" class="nav-link">Platforms</a>
+                <a href="/faq.html" class="nav-link">FAQ</a>
+                <a href="/about.html" class="nav-link">About</a>
+            </nav>
+
+            <div class="header-controls">
+                <a href="/" class="back-link">← Return to Tool</a>
+            </div>
+        </header>
+
+        <!-- Main Body -->
+        <main class="main-content">
+            <article class="policy-card">
+                <header class="policy-header">
+                    <h1>How to Use Reeva</h1>
+                    <p>A comprehensive walkthrough on retrieving, inspecting, and saving public web media.</p>
+                </header>
+
+                <div class="policy-body">
+                    <section>
+                        <h2>Step 1: Obtain a Valid Public Media Link</h2>
+                        <p>Navigate to the public video, short, reel, or pin you wish to preserve in your web browser or official app. Click the <em>Share</em> button and select <em>Copy Link</em>. Reeva supports direct links from YouTube, Twitter/X, Pinterest, TikTok, Instagram, Facebook, and generic public MP4/WebM video pages.</p>
+                        <p><strong>Note on Privacy:</strong> Reeva cannot access private accounts, closed group posts, paid subscriptions, or age-restricted content that requires an active user login.</p>
+                    </section>
+
+                    <section>
+                        <h2>Step 2: Paste the URL into Reeva</h2>
+                        <p>Open Reeva in your browser and paste the link into the primary input box. You may also click on the corresponding platform icon in the selector above the input box to filter directly for your platform, though Reeva will automatically detect the platform based on the submitted hostname.</p>
+                    </section>
+
+                    <section>
+                        <h2>Step 3: Confirm Ownership or Permission</h2>
+                        <p>Check the confirmation box stating: <em>"I confirm I own or have permission to download this content."</em> Reeva is strictly designed for personal backups, educational research, and archival of content you own or have explicit authorization to store. Automated extraction is disabled until this confirmation is provided.</p>
+                    </section>
+
+                    <section>
+                        <h2>Step 4: Click 'Get' & Inspect Results</h2>
+                        <p>Click the <strong>Get</strong> button to initiate secure server-side metadata inspection and stream verification. Reeva performs strict TLS certificate validation, inspects container headers, and confirms video codecs.</p>
+                        <p>Depending on platform permissions and network routing, one of two results will appear:</p>
+                        <ul>
+                            <li><strong>Direct Video File Download:</strong> A video preview player will render with full playback controls, accompanied by a prominent black <strong>Download</strong> button. Clicking this button streams the clean MP4 or WebM video directly to your local downloads directory.</li>
+                            <li><strong>Official Sandboxed Embed Player:</strong> When upstream platform terms or regional regulatory policies restrict direct binary file downloads, Reeva renders an official sandboxed embedded player with an explicit notice badge, allowing seamless interactive viewing without violating terms.</li>
+                        </ul>
+                    </section>
+
+                    <section>
+                        <h2>Troubleshooting Common Questions</h2>
+                        <div class="faq-list">
+                            <div class="faq-item">
+                                <div class="faq-question">Why did I receive an "Unsupported Domain" error?</div>
+                                <div class="faq-answer">Reeva only communicates with permitted platform domains (such as youtube.com, twitter.com, pinterest.com, etc.). Shortlinks from unapproved redirectors or internal network IP addresses are blocked by our anti-SSRF security boundary.</div>
+                            </div>
+                            <div class="faq-item">
+                                <div class="faq-question">Why is the video buffering or preview taking a few seconds?</div>
+                                <div class="faq-answer">For high-definition videos with separate audio and video tracks, Reeva performs a lightweight container merge in an ephemeral scratch sandbox to ensure audio and video are synchronized into a single playable MP4 file before streaming.</div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </article>
+
+            <!-- Reserved Advertisement Container (AdSense Readiness) -->
+            <aside class="ad-slot-editorial" aria-label="Sponsor Area">
+                <span class="ad-slot-label">Editorial Sponsorship</span>
+                <span class="ad-slot-placeholder">Reserved editorial sponsorship space &mdash; strictly separated from downloader controls</span>
+            </aside>
+        </main>
+
+        <!-- Site Footer -->
+        <footer class="site-footer">
+            <div class="footer-bottom">
+                <div class="footer-links">
+                    <a href="/privacy.html" class="footer-link">Privacy Policy</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/terms.html" class="footer-link">Terms of Service</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/copyright.html" class="footer-link">DMCA / Copyright</a>
+                    <span class="footer-sep" aria-hidden="true">•</span>
+                    <a href="/contact.html" class="footer-link">Contact</a>
+                </div>
+                <div class="footer-copy">
+                    <span>Disclaimer: This tool is for personal and educational use only.</span>
+                    <span>We never store or host media. All rights belong to their respective owners.</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+</body>
+
+</html>
