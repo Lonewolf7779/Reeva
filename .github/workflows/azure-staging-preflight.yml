@@ -160,38 +160,38 @@ jobs:
           if az containerapp show --name "${STAGING_APP_NAME}" --resource-group "${RESOURCE_GROUP}" -o json > staging_app.json 2>staging_err.log; then
             STAGING_STATUS="EXISTS"
             python3 - << 'PYEOF'
-            import json, sys
+          import json, sys
 
-            with open("staging_app.json", "r", encoding="utf-8") as f:
-                app = json.load(f)
+          with open("staging_app.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
 
-            props = app.get("properties") or {}
-            cfg = props.get("configuration") or {}
-            ingress = cfg.get("ingress") or {}
+          props = app.get("properties") or {}
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
 
-            fqdn = ingress.get("fqdn", "N/A")
-            target_port = ingress.get("targetPort")
-            ip_rules = ingress.get("ipSecurityRestrictions") or []
+          fqdn = ingress.get("fqdn", "N/A")
+          target_port = ingress.get("targetPort")
+          ip_rules = ingress.get("ipSecurityRestrictions") or []
 
-            print("Staging App Status:   EXISTS")
-            print(f"Staging FQDN:         https://{fqdn}")
-            print(f"Active Revision:      {props.get('latestRevisionName', 'N/A')}")
-            print(f"Ingress Target Port:  {target_port}")
+          print("Staging App Status:   EXISTS")
+          print(f"Staging FQDN:         https://{fqdn}")
+          print(f"Active Revision:      {props.get('latestRevisionName', 'N/A')}")
+          print(f"Ingress Target Port:  {target_port}")
 
-            if target_port != 3000:
-                print(f"::warning::Staging app ingress targetPort is {target_port}, but container listens on 3000.", file=sys.stderr)
-            else:
-                print("Target port check:    PASSED (3000)")
+          if target_port != 3000:
+              print(f"::warning::Staging app ingress targetPort is {target_port}, but container listens on 3000.", file=sys.stderr)
+          else:
+              print("Target port check:    PASSED (3000)")
 
-            if not ip_rules:
-                print("::warning::Ingress IP security restrictions: NOT CONFIGURED. Staging ingress restrictions are a deployment prerequisite.", file=sys.stderr)
-            else:
-                has_unrestricted = any(r.get("ipAddressRange") in ["0.0.0.0/0", "::/0"] and r.get("action") == "Allow" for r in ip_rules)
-                if has_unrestricted:
-                    print("::warning::Ingress IP rules contain 0.0.0.0/0 Allow. Must restrict to authorized IP ranges before deployment.", file=sys.stderr)
-                else:
-                    print(f"Ingress IP rules:     CONSTRAINED ({len(ip_rules)} active rules)")
-            PYEOF
+          if not ip_rules:
+              print("::warning::Ingress IP security restrictions: NOT CONFIGURED. Staging ingress restrictions are a deployment prerequisite.", file=sys.stderr)
+          else:
+              has_unrestricted = any(r.get("ipAddressRange") in ["0.0.0.0/0", "::/0"] and r.get("action") == "Allow" for r in ip_rules)
+              if has_unrestricted:
+                  print("::warning::Ingress IP rules contain 0.0.0.0/0 Allow. Must restrict to authorized IP ranges before deployment.", file=sys.stderr)
+              else:
+                  print(f"Ingress IP rules:     CONSTRAINED ({len(ip_rules)} active rules)")
+          PYEOF
             echo "staging_exists=true" >> "$GITHUB_OUTPUT"
           else
             ERR_MSG=$(cat staging_err.log)
