@@ -180,7 +180,10 @@
             return {
                 success: true,
                 streamUrl,
-                downloadUrl
+                downloadUrl,
+                media: data.media || null,
+                items: Array.isArray(data.items) ? data.items : null,
+                itemCount: typeof data.itemCount === "number" ? data.itemCount : (Array.isArray(data.items) ? data.items.length : 0)
             };
 
         } catch (err) {

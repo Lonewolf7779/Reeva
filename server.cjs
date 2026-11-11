@@ -555,6 +555,12 @@ async function sniffLocalMediaFormat(filePath, mediaType = "video") {
                     fileExt = "jpg";
                     return { contentType, fileExt };
                 }
+                // WebP: 0x52 0x49 0x46 0x46 ('RIFF') ... 0x57 0x45 0x42 0x50 ('WEBP')
+                if (bytesRead >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") {
+                    contentType = "image/webp";
+                    fileExt = "webp";
+                    return { contentType, fileExt };
+                }
                 // PNG: 0x89 0x50 0x4E 0x47
                 if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
                     contentType = "image/png";
@@ -591,6 +597,72 @@ async function sniffLocalMediaFormat(filePath, mediaType = "video") {
     }
 
     return { contentType, fileExt };
+}
+
+/**
+ * Resolves the precise file extension from Content-Type and media type.
+ *
+ * @param {string|null} contentType
+ * @param {string} [mediaType="video"]
+ * @returns {string} File extension without leading dot (e.g. "png", "jpg", "mp4")
+ */
+function resolveMediaExtension(contentType, mediaType = "video") {
+    const cleanType = (contentType || "").split(";")[0].trim().toLowerCase();
+
+    // Specific MIME mapping
+    switch (cleanType) {
+        case "image/png":
+            return "png";
+        case "image/webp":
+            return "webp";
+        case "image/gif":
+            return "gif";
+        case "image/jpeg":
+        case "image/jpg":
+            return "jpg";
+        case "image/svg+xml":
+            return "svg";
+        case "video/webm":
+        case "audio/webm":
+            return "webm";
+        case "video/ogg":
+            return "ogv";
+        case "audio/ogg":
+            return "ogg";
+        case "audio/mpeg":
+        case "audio/mp3":
+            return "mp3";
+        case "audio/aac":
+            return "aac";
+        case "audio/mp4":
+        case "audio/m4a":
+        case "audio/x-m4a":
+            return "m4a";
+        case "video/quicktime":
+            return "mov";
+        case "video/3gpp":
+            return "3gp";
+        case "video/x-m4v":
+            return "m4v";
+        case "video/mp4":
+            return "mp4";
+    }
+
+    // Substring fallback
+    if (cleanType.includes("png")) return "png";
+    if (cleanType.includes("webp")) return "webp";
+    if (cleanType.includes("gif")) return "gif";
+    if (cleanType.includes("jpeg") || cleanType.includes("jpg")) return "jpg";
+    if (cleanType.includes("webm")) return "webm";
+    if (cleanType.includes("ogg")) return mediaType === "audio" ? "ogg" : "ogv";
+    if (cleanType.includes("mpeg") || cleanType.includes("mp3")) return "mp3";
+    if (cleanType.includes("aac")) return "aac";
+    if (cleanType.includes("mp4") || cleanType.includes("m4v")) return mediaType === "audio" ? "m4a" : "mp4";
+
+    // Media type default fallbacks
+    if (mediaType === "image") return "jpg";
+    if (mediaType === "audio") return "mp3";
+    return "mp4";
 }
 
 // ================== AUTHORITATIVE SECURE MEDIA STREAMING ==================
@@ -806,9 +878,56 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             res.setHeader("Content-Disposition", disposition);
             res.setHeader("X-Content-Type-Options", "nosniff");
             res.setHeader("Cache-Control", "private, no-transform, max-age=3600");
-            res.setHeader("Content-Length", stat.size);
+            res.setHeader("Accept-Ranges", "bytes");
 
-            const fileStream = fs.createReadStream(resolvedFilePath);
+            const rangeHeader = req.headers.range;
+            let fileStream;
+
+            if (rangeHeader && typeof rangeHeader === "string") {
+                const match = rangeHeader.trim().match(/^bytes=(\d*)-(\d*)$/);
+                if (!match) {
+                    releaseLease();
+                    logStreamTerminal("error", "RANGE_NOT_SATISFIABLE");
+                    res.setHeader("Content-Range", `bytes */${stat.size}`);
+                    return res.status(416).end();
+                }
+
+                let start = match[1] ? parseInt(match[1], 10) : undefined;
+                let end = match[2] ? parseInt(match[2], 10) : undefined;
+
+                if (start === undefined && end === undefined) {
+                    releaseLease();
+                    logStreamTerminal("error", "RANGE_NOT_SATISFIABLE");
+                    res.setHeader("Content-Range", `bytes */${stat.size}`);
+                    return res.status(416).end();
+                }
+
+                if (start === undefined) {
+                    // Suffix range: bytes=-500 means the final 500 bytes
+                    start = Math.max(0, stat.size - end);
+                    end = stat.size - 1;
+                } else if (end === undefined || end >= stat.size) {
+                    end = stat.size - 1;
+                }
+
+                if (start >= stat.size || start > end) {
+                    releaseLease();
+                    logStreamTerminal("error", "RANGE_NOT_SATISFIABLE");
+                    res.setHeader("Content-Range", `bytes */${stat.size}`);
+                    return res.status(416).end();
+                }
+
+                const chunkSize = end - start + 1;
+                res.status(206);
+                res.setHeader("Content-Range", `bytes ${start}-${end}/${stat.size}`);
+                res.setHeader("Content-Length", chunkSize);
+
+                fileStream = fs.createReadStream(resolvedFilePath, { start, end });
+            } else {
+                res.status(200);
+                res.setHeader("Content-Length", stat.size);
+                fileStream = fs.createReadStream(resolvedFilePath);
+            }
             activeStream = fileStream;
 
             // Wire lease release to all termination events
@@ -884,14 +1003,22 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         };
         const referer = platformReferers[mediaEntry.platform] || "https://www.instagram.com/";
 
-        fetchHandle = await secureFetch(mediaEntry.upstreamUrl, {
+        const upstreamHeaders = {
+            "Referer": referer
+        };
+
+        const clientRange = req.headers.range;
+        if (clientRange && typeof clientRange === "string" && /^bytes=\d*-\d*$/.test(clientRange.trim())) {
+            upstreamHeaders["Range"] = clientRange.trim();
+        }
+
+        const fetchFn = app.secureFetch || secureFetch;
+        fetchHandle = await fetchFn(mediaEntry.upstreamUrl, {
             allowedDomains: SUPPORTED_MEDIA_DOMAINS,
             maxSizeBytes: maxMediaSize,
             maxRedirects: 3,
             timeoutMs: 30000,
-            headers: {
-                "Referer": referer
-            }
+            headers: upstreamHeaders
         });
 
         if (abortController.signal.aborted || res.destroyed) {
@@ -900,6 +1027,18 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         }
 
         const { response } = fetchHandle;
+
+        if (response.status === 416) {
+            fetchHandle.abort();
+            logStreamTerminal("error", "RANGE_NOT_SATISFIABLE");
+            res.status(416);
+            res.setHeader("Accept-Ranges", "bytes");
+            const contentRange = response.headers.get("content-range");
+            if (contentRange) {
+                res.setHeader("Content-Range", contentRange);
+            }
+            return res.end();
+        }
 
         if (!response.ok) {
             fetchHandle.abort();
@@ -929,12 +1068,7 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
         }
 
         // Set safe response headers
-        let fileExt = mediaEntry.type === "image" ? "jpg" : (mediaEntry.type === "audio" ? "m4a" : "mp4");
-        if (rawContentType.includes("webm")) {
-            fileExt = "webm";
-        } else if (rawContentType.includes("ogg")) {
-            fileExt = mediaEntry.type === "audio" ? "ogg" : "ogv";
-        }
+        const fileExt = resolveMediaExtension(rawContentType, mediaEntry.type);
         let filename = `reeva_${mediaEntry.platform || "media"}`;
         if (typeof mediaEntry.carouselIndex === "number" && mediaEntry.carouselIndex > 0) {
             filename += `_${String(mediaEntry.carouselIndex).padStart(2, "0")}`;
@@ -945,10 +1079,17 @@ async function streamRegisteredMedia(req, res, mediaEntry, isDownload = false) {
             ? `attachment; filename="${filename}"`
             : "inline";
 
+        res.status(response.status);
         res.setHeader("Content-Type", rawContentType);
         res.setHeader("Content-Disposition", disposition);
         res.setHeader("X-Content-Type-Options", "nosniff");
         res.setHeader("Cache-Control", "private, no-transform, max-age=3600");
+        res.setHeader("Accept-Ranges", "bytes");
+
+        const contentRange = response.headers.get("content-range");
+        if (contentRange) {
+            res.setHeader("Content-Range", contentRange);
+        }
 
         const contentLength = response.headers.get("content-length");
         if (contentLength) {
@@ -1474,5 +1615,7 @@ app.SECURITY_ERROR_MESSAGES = SECURITY_ERROR_MESSAGES;
 app.sanitizePublicError = sanitizePublicError;
 app.sanitizePublicMessage = sanitizePublicMessage;
 app.containsSensitiveDiagnostic = containsSensitiveDiagnostic;
+app.resolveMediaExtension = resolveMediaExtension;
+app.sniffLocalMediaFormat = sniffLocalMediaFormat;
 
 module.exports = app;

@@ -534,8 +534,16 @@ function createAppController(options = {}) {
                     streamUrl: result.streamUrl,
                     downloadUrl: result.downloadUrl
                 });
-                ui.setLog(t("status.success", {}, renderLang), "success");
-                ui.showPreview(result.streamUrl);
+
+                const mediaType = (result.media && result.media.type) || result.type || "video";
+                const messageKey = mediaType === "image"
+                    ? "status.success_image"
+                    : (mediaType === "audio"
+                        ? "status.success_audio"
+                        : (mediaType === "video" ? "status.success_video" : "status.success"));
+
+                ui.setLog(t(messageKey, {}, renderLang), "success");
+                ui.showPreview(result.streamUrl, mediaType);
                 ui.setDownloadButtonVisible(true);
             }
 

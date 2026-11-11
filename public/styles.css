@@ -1176,6 +1176,23 @@ button.action:disabled {
     outline: none;
 }
 
+#preview-image {
+    width: 100%;
+    max-height: 520px;
+    object-fit: contain;
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-color);
+    display: block;
+}
+
+#preview-audio {
+    width: 100%;
+    margin: 8px 0;
+    border-radius: var(--radius-md);
+    outline: none;
+}
+
 /* Sandboxed Embed Container */
 #embed-container {
     width: 100%;

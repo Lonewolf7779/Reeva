@@ -45,7 +45,10 @@
             "consent.required": "Please check the confirmation box before downloading.",
             "status.empty_url": "⚠️ Please paste a video link first.",
             "status.fetching": "Fetching video... please wait.",
-            "status.success": "✅ Video found! Click \"Download\" below.",
+            "status.success": "✅ Media found! Click \"Download\" below.",
+            "status.success_video": "✅ Video found! Click \"Download\" below.",
+            "status.success_image": "✅ Image found! Click \"Download\" below.",
+            "status.success_audio": "✅ Audio found! Click \"Download\" below.",
             "status.not_found": "⚠️ Could not find a downloadable video for this link.",
             "status.network_error": "⚠️ Network error: {message}",
             "status.generic_error": "Failed to retrieve media. Please try again.",
@@ -57,7 +60,9 @@
             "footer.privacy": "Privacy Policy",
             "footer.terms": "Terms of Service",
             "aria.video_url": "Video URL",
-            "aria.media_preview": "Media preview"
+            "aria.media_preview": "Media preview",
+            "aria.image_preview": "Image preview",
+            "aria.audio_preview": "Audio preview"
         }),
         hi: Object.freeze({
             "app.title": "रीवा (Reeva) — यूनिवर्सल रील डाउनलोडर",
@@ -84,7 +89,10 @@
             "consent.required": "कृपया डाउनलोड करने से पहले पुष्टि बॉक्स को चेक करें।",
             "status.empty_url": "⚠️ कृपया पहले एक वीडियो लिंक पेस्ट करें।",
             "status.fetching": "वीडियो लाया जा रहा है... कृपया प्रतीक्षा करें।",
-            "status.success": "✅ वीडियो मिल गया! नीचे \"डाउनलोड करें\" पर क्लिक करें।",
+            "status.success": "✅ मीडिया मिल गया! नीचे \"डाउनलोड करें\" पर क्लिक करें।",
+            "status.success_video": "✅ वीडियो मिल गया! नीचे \"डाउनलोड करें\" पर क्लिक करें।",
+            "status.success_image": "✅ छवि (Image) मिल गई! नीचे \"डाउनलोड करें\" पर क्लिक करें।",
+            "status.success_audio": "✅ ऑडियो मिल गया! नीचे \"डाउनलोड करें\" पर क्लिक करें।",
             "status.not_found": "⚠️ इस लिंक के लिए कोई डाउनलोड करने योग्य वीडियो नहीं मिला।",
             "status.network_error": "⚠️ नेटवर्क त्रुटि: {message}",
             "status.generic_error": "मीडिया प्राप्त करने में विफल। कृपया पुनः प्रयास करें।",
@@ -96,7 +104,9 @@
             "footer.privacy": "गोपनीयता नीति",
             "footer.terms": "सेवा की शर्तें",
             "aria.video_url": "वीडियो लिंक",
-            "aria.media_preview": "मीडिया पूर्वावलोकन"
+            "aria.media_preview": "मीडिया पूर्वावलोकन",
+            "aria.image_preview": "छवि पूर्वावलोकन",
+            "aria.audio_preview": "ऑडियो पूर्वावलोकन"
         })
     });
 

@@ -36,6 +36,8 @@
             urlIn: documentRef.getElementById("url"),
             log: documentRef.getElementById("log"),
             preview: documentRef.getElementById("preview"),
+            previewImage: documentRef.getElementById("preview-image"),
+            previewAudio: documentRef.getElementById("preview-audio"),
             embedContainer: documentRef.getElementById("embed-container"),
             carouselContainer: documentRef.getElementById("carousel-container"),
             consent: documentRef.getElementById("consent"),
@@ -96,30 +98,91 @@
         }
 
         /**
-         * Displays the video preview element with a validated stream URL.
+         * Displays the appropriate media preview element (video, image, or audio)
+         * based on mediaType with a validated stream URL.
          *
          * @param {string} streamUrl
+         * @param {string} [mediaType="video"]
+         * @param {string|null} [posterUrl=null]
          */
-        function showPreview(streamUrl) {
-            if (!elements.preview || !streamUrl) return;
-            elements.preview.src = streamUrl;
-            elements.preview.classList.remove("hidden");
-            elements.preview.style.display = "block";
+        function showPreview(streamUrl, mediaType = "video", posterUrl = null) {
+            if (!streamUrl) return;
+
+            // Reset and hide all previews first
+            hidePreview();
+
+            const normalizedType = String(mediaType || "video").toLowerCase();
+
+            if (normalizedType === "image") {
+                if (elements.previewImage) {
+                    elements.previewImage.src = streamUrl;
+                    elements.previewImage.classList.remove("hidden");
+                    elements.previewImage.style.display = "block";
+                }
+            } else if (normalizedType === "audio") {
+                if (elements.previewAudio) {
+                    elements.previewAudio.src = streamUrl;
+                    elements.previewAudio.classList.remove("hidden");
+                    elements.previewAudio.style.display = "block";
+                }
+            } else if (normalizedType === "video") {
+                if (elements.preview) {
+                    elements.preview.src = streamUrl;
+                    if (posterUrl) {
+                        elements.preview.poster = posterUrl;
+                    }
+                    elements.preview.classList.remove("hidden");
+                    elements.preview.style.display = "block";
+                }
+            } else {
+                // Unknown/unsupported preview media type: safe fallback
+                // All previews remain hidden; the user can still download
+            }
         }
 
         /**
-         * Hides and resets the video preview.
+         * Hides and resets all media preview elements (video, image, audio),
+         * detaching playback buffers and releasing memory resources.
          */
         function hidePreview() {
-            if (!elements.preview) return;
-            try {
-                if (typeof elements.preview.pause === "function") {
-                    elements.preview.pause();
-                }
-            } catch (_) {}
-            elements.preview.removeAttribute("src");
-            elements.preview.classList.add("hidden");
-            elements.preview.style.display = "none";
+            if (elements.preview) {
+                try {
+                    if (typeof elements.preview.pause === "function") {
+                        elements.preview.pause();
+                    }
+                    if (typeof elements.preview.load === "function") {
+                        elements.preview.removeAttribute("src");
+                        elements.preview.load();
+                    } else {
+                        elements.preview.removeAttribute("src");
+                    }
+                } catch (_) {}
+                elements.preview.removeAttribute("poster");
+                elements.preview.classList.add("hidden");
+                elements.preview.style.display = "none";
+            }
+
+            if (elements.previewImage) {
+                elements.previewImage.removeAttribute("src");
+                elements.previewImage.classList.add("hidden");
+                elements.previewImage.style.display = "none";
+            }
+
+            if (elements.previewAudio) {
+                try {
+                    if (typeof elements.previewAudio.pause === "function") {
+                        elements.previewAudio.pause();
+                    }
+                    if (typeof elements.previewAudio.load === "function") {
+                        elements.previewAudio.removeAttribute("src");
+                        elements.previewAudio.load();
+                    } else {
+                        elements.previewAudio.removeAttribute("src");
+                    }
+                } catch (_) {}
+                elements.previewAudio.classList.add("hidden");
+                elements.previewAudio.style.display = "none";
+            }
         }
 
         /**
@@ -419,6 +482,8 @@
             if (elements.consentText) elements.consentText.textContent = t("consent.label", {}, lang);
             if (elements.whyConsent) elements.whyConsent.textContent = t("consent.why", {}, lang);
             if (elements.preview) elements.preview.setAttribute("aria-label", t("aria.media_preview", {}, lang));
+            if (elements.previewImage) elements.previewImage.setAttribute("alt", t("aria.image_preview", {}, lang));
+            if (elements.previewAudio) elements.previewAudio.setAttribute("aria-label", t("aria.audio_preview", {}, lang));
 
             // Footer text
             if (elements.footerDisclaimer) elements.footerDisclaimer.textContent = t("footer.disclaimer", {}, lang);

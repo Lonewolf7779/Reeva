@@ -242,8 +242,8 @@ jobs:
               NODE_ENV="production" \
               PORT="3000" \
               REEVA_ENABLE_INSTAGRAM="true" \
-              REEVA_ENABLE_TIKTOK="false" \
-              REEVA_ENABLE_FACEBOOK="false" \
+              REEVA_ENABLE_TIKTOK="true" \
+              REEVA_ENABLE_FACEBOOK="true" \
               REEVA_ENABLE_AUDIO_ONLY="false" \
               MAX_GLOBAL_EXTRACTION_CONCURRENCY="3" \
               MAX_IP_EXTRACTION_CONCURRENCY="2" \
@@ -301,12 +301,20 @@ jobs:
           CAP_JSON=$(curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/api/capabilities")
           echo "Capabilities response: ${CAP_JSON}"
 
-          # Verify Instagram feature gate is active in staging
+          # Verify Instagram, Facebook, and TikTok feature gates are active in staging
           if ! echo "${CAP_JSON}" | grep -q '"instagram":true'; then
             echo "::error::Verification failed: Instagram feature gate is not enabled in staging!" >&2
             exit 1
           fi
-          echo "Confirmed: 'instagram: true' is active on staging."
+          if ! echo "${CAP_JSON}" | grep -q '"facebook":true'; then
+            echo "::error::Verification failed: Facebook feature gate is not enabled in staging!" >&2
+            exit 1
+          fi
+          if ! echo "${CAP_JSON}" | grep -q '"tiktok":true'; then
+            echo "::error::Verification failed: TikTok feature gate is not enabled in staging!" >&2
+            exit 1
+          fi
+          echo "Confirmed: 'instagram: true', 'facebook: true', and 'tiktok: true' are active on staging."
 
       - name: 7. Generate Staging Deployment Summary
         if: always()
@@ -322,7 +330,7 @@ jobs:
           * **Deployed Reference:** \`${PINNED_IMAGE:-Unresolved}\`
           * **Container Runtime Port:** \`3000\`
           * **Ingress IP Restrictions:** \`Enforced\`
-          * **Instagram Feature Gate:** \`true\` (Active on staging only)
+          * **Staging Feature Gates:** \`Instagram=true\`, \`Facebook=true\`, \`TikTok=true\` (Active on staging only)
           * **Production Application:** \`${PROD_APP_NAME}\` (Untouched, Unchanged)
 
           ### Live Staging Acceptance Endpoints
