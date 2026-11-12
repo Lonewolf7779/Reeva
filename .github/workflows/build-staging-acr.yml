@@ -1,0 +1,266 @@
+name: Build and Push Staging Image to ACR
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_staging_build:
+        description: "Type 'BUILD_STAGING' to confirm building staging image for commit b19c3a1"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: "reeva-rg"
+  ACR_NAME: "reevaacr20261031"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
+  IMAGE_NAME: "reeva"
+  EXPECTED_BRANCH_REF: "refs/heads/phase-4.2-production-platform-gates"
+  EXPECTED_COMMIT_SHA: "b19c3a1115891da856b58e4fe6a48b047580765c"
+  SHORT_COMMIT_SHA: "b19c3a1"
+  PROD_TAG: "mobile-test"
+  EXPECTED_PROD_DIGEST: "sha256:c02cdcd9bb285e7541b2b3016f35859dced79f268228f3170ea27e503c973fc8"
+
+jobs:
+  build-and-push-staging:
+    name: Build & Push Staging Image (linux/amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: 1. Strict Input Confirmation & Safety Gate
+        env:
+          CONFIRMATION: ${{ inputs.confirm_staging_build }}
+        run: |
+          set -euo pipefail
+          echo "Validating staging build confirmation..."
+          if [ "${CONFIRMATION}" != "BUILD_STAGING" ]; then
+            echo "::error::Confirmation mismatch. You must enter 'BUILD_STAGING' to execute." >&2
+            exit 1
+          fi
+          echo "Confirmation validated: BUILD_STAGING."
+
+      - name: 2. Checkout Repository at Approved Commit
+        uses: actions/checkout@v4
+        with:
+          ref: "b19c3a1115891da856b58e4fe6a48b047580765c"
+
+      - name: 3. Verify Exact Approved Branch, Git Commit & Architecture
+        run: |
+          set -euo pipefail
+          echo "Execution ref: ${GITHUB_REF}"
+          echo "Expected ref:  ${EXPECTED_BRANCH_REF}"
+
+          if [ "${GITHUB_REF}" != "${EXPECTED_BRANCH_REF}" ]; then
+            echo "::error::Fail-closed: Workflow must be executed on '${EXPECTED_BRANCH_REF}', but detected '${GITHUB_REF}'. Halting!" >&2
+            exit 1
+          fi
+          echo "Branch guard check: PASSED (${GITHUB_REF})."
+
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          echo "Checked-out commit SHA: ${CURRENT_SHA}"
+          echo "Expected commit SHA:    ${EXPECTED_COMMIT_SHA}"
+
+          if [ "${CURRENT_SHA}" != "${EXPECTED_COMMIT_SHA}" ]; then
+            echo "::error::Fail-closed: Checked-out commit '${CURRENT_SHA}' does not match approved commit '${EXPECTED_COMMIT_SHA}'. Halting!" >&2
+            exit 1
+          fi
+          echo "Commit verification check: PASSED (${CURRENT_SHA})."
+
+          ARCH="$(uname -m)"
+          echo "Runner architecture: ${ARCH}"
+          if [ "${ARCH}" != "x86_64" ]; then
+            echo "::error::Fail-closed: Target build requires x86_64 runner, but detected '${ARCH}'. Halting!" >&2
+            exit 1
+          fi
+          echo "Architecture verification check: PASSED (x86_64)."
+
+      - name: 4. Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 5. Verify ACR State & Authenticate Docker
+        run: |
+          set -euo pipefail
+          echo "AZURE_AUTH_COMPLETED=true" >> "$GITHUB_ENV"
+          echo "Checking Azure Container Registry '${ACR_NAME}'..."
+          DISCOVERED_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query "loginServer" -o tsv | tr -d '\r')
+
+          if [ "${DISCOVERED_LOGIN_SERVER}" != "${ACR_LOGIN_SERVER}" ]; then
+            echo "::error::ACR login server mismatch! Expected '${ACR_LOGIN_SERVER}', got '${DISCOVERED_LOGIN_SERVER}'." >&2
+            exit 1
+          fi
+
+          echo "Capturing pre-build production image digest for '${PROD_TAG}'..."
+          PRE_BUILD_PROD_DIGEST=$(az acr manifest show-metadata --name "${IMAGE_NAME}:${PROD_TAG}" --registry "${ACR_NAME}" --query "digest" -o tsv 2>/dev/null | tr -d '\r' || true)
+          echo "Pre-build production digest: ${PRE_BUILD_PROD_DIGEST}"
+
+          if [ "${PRE_BUILD_PROD_DIGEST}" != "${EXPECTED_PROD_DIGEST}" ]; then
+            echo "::error::Pre-build production digest mismatch! Expected '${EXPECTED_PROD_DIGEST}', found '${PRE_BUILD_PROD_DIGEST}'." >&2
+            exit 1
+          fi
+
+          echo "Authenticating Docker to ACR '${ACR_NAME}'..."
+          az acr login --name "${ACR_NAME}"
+
+      - name: 6. Build Staging Container Image (linux/amd64)
+        run: |
+          set -euo pipefail
+          TAG_SHORT="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:staging-${SHORT_COMMIT_SHA}"
+          TAG_FULL="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:staging-${EXPECTED_COMMIT_SHA}"
+
+          echo "Building Docker image for linux/amd64..."
+          echo "Applying OCI revision label: org.opencontainers.image.revision=${EXPECTED_COMMIT_SHA}"
+          echo "Target tag 1: ${TAG_SHORT}"
+          echo "Target tag 2: ${TAG_FULL}"
+
+          docker build \
+            --platform=linux/amd64 \
+            --label "org.opencontainers.image.revision=${EXPECTED_COMMIT_SHA}" \
+            -t "${TAG_SHORT}" \
+            -t "${TAG_FULL}" \
+            .
+
+          echo "Image build complete."
+
+      - name: 7. Push Staging Tags to ACR
+        run: |
+          set -euo pipefail
+          TAG_SHORT="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:staging-${SHORT_COMMIT_SHA}"
+          TAG_FULL="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:staging-${EXPECTED_COMMIT_SHA}"
+
+          echo "Pushing '${TAG_SHORT}'..."
+          docker push "${TAG_SHORT}"
+
+          echo "Pushing '${TAG_FULL}'..."
+          docker push "${TAG_FULL}"
+
+          echo "Push complete."
+
+      - name: 8. Verify Digest Integrity & Published Image Configuration
+        id: verify-staging
+        run: |
+          set -euo pipefail
+          echo "Verifying published staging tags in ACR..."
+
+          DIGEST_SHORT=$(az acr manifest show-metadata --name "${IMAGE_NAME}:staging-${SHORT_COMMIT_SHA}" --registry "${ACR_NAME}" --query "digest" -o tsv | tr -d '\r')
+          DIGEST_FULL=$(az acr manifest show-metadata --name "${IMAGE_NAME}:staging-${EXPECTED_COMMIT_SHA}" --registry "${ACR_NAME}" --query "digest" -o tsv | tr -d '\r')
+
+          echo "Short tag digest: ${DIGEST_SHORT}"
+          echo "Full tag digest:  ${DIGEST_FULL}"
+
+          if [ -z "${DIGEST_SHORT}" ] || [ -z "${DIGEST_FULL}" ]; then
+            echo "::error::Failed to retrieve published staging digests from ACR." >&2
+            exit 1
+          fi
+
+          if [ "${DIGEST_SHORT}" != "${DIGEST_FULL}" ]; then
+            echo "::error::Integrity check failed: Short and full tags resolve to different digests!" >&2
+            exit 1
+          fi
+
+          # Export verified staging image digest to step outputs and environment
+          echo "digest=${DIGEST_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "STAGING_DIGEST=${DIGEST_SHORT}" >> "$GITHUB_ENV"
+          echo "Integrity check: PASSED (Both staging tags resolve to identical digest ${DIGEST_SHORT})."
+
+          echo "Pulling published image strictly by verified digest to inspect image configuration..."
+          IMAGE_DIGEST_REF="${ACR_LOGIN_SERVER}/${IMAGE_NAME}@${DIGEST_SHORT}"
+          if ! docker pull "${IMAGE_DIGEST_REF}" 2>pull_err.log; then
+            echo "::error::Failed to pull published staging image by digest." >&2
+            cat pull_err.log >&2
+            exit 1
+          fi
+
+          if ! docker inspect "${IMAGE_DIGEST_REF}" > image_inspect.json 2>inspect_err.log; then
+            echo "::error::docker inspect failed on '${IMAGE_DIGEST_REF}'." >&2
+            cat inspect_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          with open("image_inspect.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          if not data or not isinstance(data, list):
+              print("::error::docker inspect returned invalid JSON.", file=sys.stderr)
+              sys.exit(1)
+
+          img = data[0]
+          arch = img.get("Architecture") or ""
+          os_type = img.get("Os") or ""
+          labels = (img.get("Config") or {}).get("Labels") or {}
+          actual_rev = labels.get("org.opencontainers.image.revision") or ""
+          expected_sha = os.environ["EXPECTED_COMMIT_SHA"].strip().lower()
+
+          print(f"Architecture:     {arch}")
+          print(f"OS:               {os_type}")
+          print(f"OCI Revision:     {actual_rev}")
+
+          if arch != "amd64":
+              print(f"::error::Image Architecture mismatch! Expected 'amd64', found '{arch}'.", file=sys.stderr)
+              sys.exit(1)
+
+          if os_type != "linux":
+              print(f"::error::Image OS mismatch! Expected 'linux', found '{os_type}'.", file=sys.stderr)
+              sys.exit(1)
+
+          if actual_rev.lower() != expected_sha:
+              print(f"::error::OCI revision label mismatch! Expected '{expected_sha}', found '{actual_rev}'.", file=sys.stderr)
+              sys.exit(1)
+
+          print("Image configuration verification: 100% PASSED (linux/amd64 + valid OCI revision).")
+          PYEOF
+
+          echo "STAGING_VERIFICATION_STATUS=PASSED" >> "$GITHUB_ENV"
+
+      - name: 9. Final Production Digest Invariant Check
+        if: always() && env.AZURE_AUTH_COMPLETED == 'true'
+        run: |
+          set -euo pipefail
+          echo "Executing independent final production-digest check..."
+          FINAL_PROD_DIGEST=$(az acr manifest show-metadata --name "${IMAGE_NAME}:${PROD_TAG}" --registry "${ACR_NAME}" --query "digest" -o tsv 2>/dev/null | tr -d '\r' || true)
+          echo "Production tag '${PROD_TAG}' digest: ${FINAL_PROD_DIGEST}"
+          echo "Expected production digest:          ${EXPECTED_PROD_DIGEST}"
+
+          if [ -z "${FINAL_PROD_DIGEST}" ]; then
+            echo "::error::CRITICAL: Could not read production tag '${PROD_TAG}' manifest!" >&2
+            exit 1
+          fi
+
+          if [ "${FINAL_PROD_DIGEST}" != "${EXPECTED_PROD_DIGEST}" ]; then
+            echo "::error::CRITICAL VIOLATION: Production digest has been altered! Expected '${EXPECTED_PROD_DIGEST}', found '${FINAL_PROD_DIGEST}'." >&2
+            exit 1
+          fi
+
+          echo "PROD_VERIFICATION_STATUS=PASSED" >> "$GITHUB_ENV"
+          echo "Final production-digest invariant check: 100% PASSED."
+
+      - name: 10. Generate Staging Build Step Summary
+        if: always()
+        run: |
+          cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Container Registry Staging Image Build Summary
+
+          * **Execution Reference:** \`${GITHUB_REF}\`
+          * **Source Git Commit:** \`${EXPECTED_COMMIT_SHA}\`
+          * **Target Architecture:** \`linux/amd64\`
+          * **Registry Login Server:** \`${ACR_LOGIN_SERVER}\`
+          * **Published Short Tag:** \`${IMAGE_NAME}:staging-${SHORT_COMMIT_SHA}\`
+          * **Published Full Tag:** \`${IMAGE_NAME}:staging-${EXPECTED_COMMIT_SHA}\`
+          * **Verified Staging Digest:** \`${STAGING_DIGEST:-Not captured (build failed or incomplete)}\`
+          * **OCI Revision Label:** \`org.opencontainers.image.revision=${EXPECTED_COMMIT_SHA}\`
+          * **Staging Verification:** \`${STAGING_VERIFICATION_STATUS:-FAILED / NOT EXECUTED}\`
+          * **Production Invariant Verification:** \`${PROD_VERIFICATION_STATUS:-FAILED / NOT EXECUTED}\`
+          * **Production Tag:** \`${PROD_TAG}\` (Expected digest: \`${EXPECTED_PROD_DIGEST:0:19}...\`)
+
+          ### Next Step: Staging Acceptance Deployment
+          Deploy this verified staging image to \`reeva-mobile-staging\` via \`.github/workflows/deploy-staging-aca.yml\` with commit SHA: \`${EXPECTED_COMMIT_SHA}\`.
+          EOF
