@@ -1,0 +1,452 @@
+name: Deploy Staging Container App
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: "Full 40-character Git commit SHA to deploy (e.g. 4f8e91a0c...)"
+        required: true
+        type: string
+      confirm_staging_target:
+        description: "Type 'DEPLOY_STAGING' to confirm deployment to reeva-mobile-staging"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: "reeva-rg"
+  ACR_NAME: "reevaacr20261031"
+  ACR_LOGIN_SERVER: "reevaacr20261031-hpg2gjgtbxb6c5hv.azurecr.io"
+  EXPECTED_ENV_NAME: "reeva-wp-env"
+  STAGING_APP_NAME: "reeva-mobile-staging"
+  PROD_APP_NAME: "reeva-mobile-app"
+  LEGACY_TEST_APP: "reeva-mobile-test"
+  TARGET_PORT: "3000"
+
+jobs:
+  deploy-staging:
+    name: Deploy & Validate reeva-mobile-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Strict Input Validation & Safety Gates
+        env:
+          CONFIRMATION: ${{ inputs.confirm_staging_target }}
+          INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          echo "Validating staging deployment confirmation..."
+          if [ "${CONFIRMATION}" != "DEPLOY_STAGING" ]; then
+            echo "::error::Deployment aborted! Input 'confirm_staging_target' must be exactly 'DEPLOY_STAGING'." >&2
+            exit 1
+          fi
+
+          echo "Validating full Git commit SHA..."
+          COMMIT_SHA=$(echo "${INPUT_COMMIT_SHA}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+
+          # Enforce full 40-character hexadecimal Git commit SHA
+          if ! [[ "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid commit SHA '${INPUT_COMMIT_SHA}'. Must be a full 40-character hexadecimal Git commit SHA." >&2
+            exit 1
+          fi
+
+          EXPECTED_STAGING_TAG="staging-${COMMIT_SHA}"
+          echo "COMMIT_SHA=${COMMIT_SHA}" >> "$GITHUB_ENV"
+          echo "EXPECTED_STAGING_TAG=${EXPECTED_STAGING_TAG}" >> "$GITHUB_ENV"
+          echo "Validated commit SHA: ${COMMIT_SHA}"
+          echo "Constructed deterministic staging tag: ${EXPECTED_STAGING_TAG}"
+
+      - name: 2. Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 3. Verify Target Application Invariants & Ingress Prerequisites
+        run: |
+          set -euo pipefail
+          # Hard collision check: Staging must NEVER collide with production or legacy resources
+          if [ "${STAGING_APP_NAME}" = "${PROD_APP_NAME}" ] || [ "${STAGING_APP_NAME}" = "${LEGACY_TEST_APP}" ]; then
+            echo "::error::FATAL: Target app name collides with protected app (${PROD_APP_NAME} / ${LEGACY_TEST_APP}). Halting!" >&2
+            exit 1
+          fi
+
+          echo "Checking if '${STAGING_APP_NAME}' exists in resource group '${RESOURCE_GROUP}'..."
+          if ! az containerapp show --name "${STAGING_APP_NAME}" --resource-group "${RESOURCE_GROUP}" -o json > staging_app.json 2>staging_err.log; then
+            echo "::error::'${STAGING_APP_NAME}' does not exist in '${RESOURCE_GROUP}' or is inaccessible." >&2
+            echo "To protect infrastructure, this workflow will NOT create resources automatically." >&2
+            echo "Please create '${STAGING_APP_NAME}' once manually in '${EXPECTED_ENV_NAME}' before executing deployment." >&2
+            cat staging_err.log >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("staging_app.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          props = app.get("properties") or {}
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
+
+          # 1. Environment check
+          env_id = props.get("managedEnvironmentId", "")
+          expected_env = "reeva-wp-env"
+          if not env_id.endswith(f"/managedEnvironments/{expected_env}"):
+              print(f"::error::Target app is attached to '{env_id}', expected '{expected_env}'. Halting!", file=sys.stderr)
+              sys.exit(1)
+          print(f"Confirmed: Staging app is attached to approved environment '{expected_env}'.")
+
+          # 2. Runtime port check (Must match container listening port 3000)
+          target_port = ingress.get("targetPort")
+          if target_port != 3000:
+              print(f"::error::Staging app ingress targetPort is {target_port}, expected 3000. Correct via Azure CLI before deploying.", file=sys.stderr)
+              sys.exit(1)
+          print(f"Confirmed: Ingress targetPort matches container runtime port ({target_port}).")
+
+          # 3. Ingress Security Restrictions Prerequisite check (Deny-by-default via Allow-only /32 rules)
+          import ipaddress
+          ip_rules = ingress.get("ipSecurityRestrictions") or []
+          if not ip_rules:
+              print("::error::Staging ingress security restrictions are MISSING. Ingress restriction is an enforced deployment prerequisite to prevent unauthorized public access.", file=sys.stderr)
+              print("Configure access restrictions via 'az containerapp ingress access-restriction set' before deploying.", file=sys.stderr)
+              sys.exit(1)
+
+          for r in ip_rules:
+              action = r.get("action")
+              cidr = r.get("ipAddressRange", "")
+              if action != "Allow":
+                  print(f"::error::Rule '{r.get('name')}' has action '{action}'. In Azure Container Apps, mixing Deny rules alters implicit default-deny behavior; only explicit /32 Allow rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+              try:
+                  net = ipaddress.IPv4Network(cidr, strict=True)
+              except ValueError:
+                  print(f"::error::Allow rule '{r.get('name')}' has invalid IPv4 CIDR '{cidr}'. Only strict IPv4 /32 host rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+              if net.prefixlen != 32 or str(net.network_address) == "0.0.0.0":
+                  print(f"::error::Allow rule '{r.get('name')}' uses '{cidr}'. Only explicit /32 IPv4 host allowlist rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+
+          print(f"Confirmed: Staging ingress (external={ingress.get('external')}, effective default=Deny) has {len(ip_rules)} strict /32 Allow rule(s):")
+          for r in ip_rules:
+              print(f"  - {r.get('name')}: {r.get('action')} {r.get('ipAddressRange')}")
+          PYEOF
+
+      - name: 4. Verify Image Existence, Provenance & Resolve Immutable Digest
+        id: resolve-digest
+        run: |
+          set -euo pipefail
+          echo "Querying ACR '${ACR_NAME}' for deterministic staging tag '${EXPECTED_STAGING_TAG}'..."
+
+          if ! az acr manifest show-metadata \
+            --name "reeva:${EXPECTED_STAGING_TAG}" \
+            --registry "${ACR_NAME}" \
+            -o json > staging_manifest.json 2>manifest_err.log; then
+
+            ERR_MSG=$(cat manifest_err.log 2>/dev/null || echo "Unknown ACR error")
+            echo "::error::Staging image 'reeva:${EXPECTED_STAGING_TAG}' was not found in ACR '${ACR_NAME}': ${ERR_MSG}" >&2
+            echo "Ensure that workflow 'build-and-push-acr.yml' was executed with 'publish_staging_image=true' for commit ${COMMIT_SHA} before attempting deployment." >&2
+            exit 1
+          fi
+
+          if [ ! -s staging_manifest.json ]; then
+            echo "::error::ACR returned an empty response (0 bytes) for image 'reeva:${EXPECTED_STAGING_TAG}'." >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          try:
+              with open("staging_manifest.json", "r", encoding="utf-8") as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"::error::Failed to parse ACR manifest metadata JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          digest = data.get("digest") or ""
+          if not digest.startswith("sha256:") or len(digest) != 71:
+              print(f"::error::Manifest returned invalid digest: '{digest}'.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Manifest Digest: {digest}")
+          print(f"Architecture:    {data.get('architecture', 'amd64')}")
+          print(f"Created Time:    {data.get('createdTime')}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"IMAGE_DIGEST={digest}\n")
+              env_file.write(f"PINNED_IMAGE={os.environ['ACR_LOGIN_SERVER']}/reeva@{digest}\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out_file:
+              out_file.write(f"digest={digest}\n")
+          PYEOF
+
+          echo "Authenticating Docker to ACR '${ACR_NAME}' for image configuration inspection..."
+          az acr login --name "${ACR_NAME}"
+
+          echo "Pulling '${PINNED_IMAGE}' by immutable digest to inspect container configuration..."
+          if ! docker pull "${PINNED_IMAGE}" 2>pull_err.log; then
+            echo "::error::Fail-closed: Failed to pull staging image by digest from ACR for image configuration inspection." >&2
+            cat pull_err.log >&2
+            exit 1
+          fi
+
+          echo "Inspecting image configuration labels via docker inspect..."
+          if ! docker inspect --format '{{json .Config.Labels}}' "${PINNED_IMAGE}" > staging_labels.json 2>inspect_err.log; then
+            echo "::error::Fail-closed: docker inspect failed on '${PINNED_IMAGE}'." >&2
+            cat inspect_err.log >&2
+            exit 1
+          fi
+
+          if [ ! -s staging_labels.json ]; then
+            echo "::error::Fail-closed: docker inspect returned empty output for '${PINNED_IMAGE}'." >&2
+            exit 1
+          fi
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          try:
+              with open("staging_labels.json", "r", encoding="utf-8") as f:
+                  labels = json.load(f)
+          except Exception as e:
+              print(f"::error::Failed to parse OCI labels JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          if not isinstance(labels, dict):
+              print(f"::error::Fail-closed: Expected labels object, got {type(labels).__name__}.", file=sys.stderr)
+              sys.exit(1)
+
+          expected_sha = os.environ["COMMIT_SHA"].strip().lower()
+          actual_revision = (labels.get("org.opencontainers.image.revision") or "").strip().lower()
+
+          print(f"Expected Source Commit SHA:  {expected_sha}")
+          print(f"OCI Image Revision Label:    {actual_revision or 'NONE'}")
+
+          if not actual_revision:
+              print("::error::Fail-closed: Image is missing required OCI label 'org.opencontainers.image.revision'. Deployment aborted.", file=sys.stderr)
+              sys.exit(1)
+
+          if actual_revision != expected_sha:
+              print(f"::error::Fail-closed: Provenance mismatch! Image revision label '{actual_revision}' does not match expected commit SHA '{expected_sha}'. Deployment aborted.", file=sys.stderr)
+              sys.exit(1)
+
+          print("Image provenance verification PASSED: OCI revision label strictly matches source commit SHA.")
+          PYEOF
+
+          echo "Immutable deployment target: ${PINNED_IMAGE}"
+
+      - name: 5. Deploy Immutable Digest & Scoped Configuration
+        run: |
+          set -euo pipefail
+          echo "Updating '${STAGING_APP_NAME}' with cryptographic digest '${PINNED_IMAGE}'..."
+
+          az containerapp update \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --image "${PINNED_IMAGE}" \
+            --set-env-vars \
+              NODE_ENV="production" \
+              PORT="3000" \
+              REEVA_ENABLE_INSTAGRAM="true" \
+              REEVA_ENABLE_TIKTOK="true" \
+              REEVA_ENABLE_FACEBOOK="true" \
+              REEVA_ENABLE_AUDIO_ONLY="false" \
+              MAX_GLOBAL_EXTRACTION_CONCURRENCY="3" \
+              MAX_IP_EXTRACTION_CONCURRENCY="2" \
+              MAX_GLOBAL_STREAM_CONCURRENCY="10" \
+              MAX_IP_STREAM_CONCURRENCY="3"
+
+          echo "Deployment update command completed successfully."
+
+      - name: 6. Verify Staging Revision, Image Digest & Control-Plane Health
+        run: |
+          set -euo pipefail
+          echo "Auditing post-deployment staging container app via Azure control plane..."
+          az containerapp show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            -o json > post_deploy_staging.json
+
+          python3 - << 'PYEOF'
+          import json, os, sys
+
+          with open("post_deploy_staging.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          props = app.get("properties") or {}
+          prov_state = props.get("provisioningState")
+          if prov_state != "Succeeded":
+              print(f"::error::Staging app provisioningState is '{prov_state}'.", file=sys.stderr)
+              sys.exit(1)
+
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
+          fqdn = ingress.get("fqdn")
+          if not fqdn:
+              print("::error::Staging app has no active ingress FQDN.", file=sys.stderr)
+              sys.exit(1)
+
+          if ingress.get("targetPort") != 3000:
+              print(f"::error::Post-deploy ingress targetPort is {ingress.get('targetPort')}, expected 3000.", file=sys.stderr)
+              sys.exit(1)
+
+          import ipaddress
+          ip_rules = ingress.get("ipSecurityRestrictions") or []
+          if not ip_rules:
+              print("::error::Post-deploy ingress IP security restrictions are missing.", file=sys.stderr)
+              sys.exit(1)
+          for r in ip_rules:
+              cidr = r.get("ipAddressRange", "")
+              if r.get("action") != "Allow":
+                  print(f"::error::Post-deploy rule '{r.get('name')}' has action '{r.get('action')}'. Only Allow-only /32 rules guarantee default-deny in ACA.", file=sys.stderr)
+                  sys.exit(1)
+              try:
+                  net = ipaddress.IPv4Network(cidr, strict=True)
+              except ValueError:
+                  print(f"::error::Post-deploy Allow rule '{r.get('name')}' has invalid IPv4 CIDR '{cidr}'.", file=sys.stderr)
+                  sys.exit(1)
+              if net.prefixlen != 32 or str(net.network_address) == "0.0.0.0":
+                  print(f"::error::Post-deploy Allow rule '{r.get('name')}' uses '{cidr}'. Only explicit /32 IPv4 host rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+
+          containers = (props.get("template") or {}).get("containers") or []
+          if not containers:
+              print("::error::Staging app template contains no containers.", file=sys.stderr)
+              sys.exit(1)
+
+          deployed_image = containers[0].get("image") or ""
+          expected_image = os.environ["PINNED_IMAGE"]
+          if deployed_image != expected_image:
+              print(f"::error::Deployed image '{deployed_image}' does not match pinned digest '{expected_image}'.", file=sys.stderr)
+              sys.exit(1)
+
+          env_map = {e.get("name"): e.get("value") for e in (containers[0].get("env") or []) if e.get("name")}
+          expected_envs = {
+              "NODE_ENV": "production",
+              "PORT": "3000",
+              "REEVA_ENABLE_INSTAGRAM": "true",
+              "REEVA_ENABLE_FACEBOOK": "true",
+              "REEVA_ENABLE_TIKTOK": "true",
+              "REEVA_ENABLE_AUDIO_ONLY": "false",
+              "MAX_GLOBAL_EXTRACTION_CONCURRENCY": "3",
+              "MAX_IP_EXTRACTION_CONCURRENCY": "2",
+              "MAX_GLOBAL_STREAM_CONCURRENCY": "10",
+              "MAX_IP_STREAM_CONCURRENCY": "3",
+          }
+          for k, v in expected_envs.items():
+              if env_map.get(k) != v:
+                  print(f"::error::Staging env '{k}' is '{env_map.get(k)}', expected '{v}'.", file=sys.stderr)
+                  sys.exit(1)
+
+          latest_rev = props.get("latestRevisionName") or ""
+          ready_rev = props.get("latestReadyRevisionName") or ""
+          if not latest_rev or latest_rev != ready_rev:
+              print(f"::error::Latest revision '{latest_rev}' is not yet ready revision '{ready_rev}'.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Staging Ingress FQDN: https://{fqdn} (external={ingress.get('external')})")
+          print(f"Active Revision:      {latest_rev}")
+          print(f"Deployed Image:       {deployed_image}")
+          print("Confirmed: Strict /32 IP allowlist, targetPort 3000, pinned digest, and all 10 staging env vars are active.")
+          print("NOTE: Azure control-plane verification does NOT prove application-level HTTP health; run /health, /ready, and /api/capabilities from an allowlisted network.")
+          with open("staging_fqdn.txt", "w", encoding="utf-8") as out:
+              out.write(fqdn)
+          with open("staging_revision.txt", "w", encoding="utf-8") as out:
+              out.write(latest_rev)
+          PYEOF
+
+          ACTIVE_REVISION=$(cat staging_revision.txt)
+          echo "Inspecting active revision '${ACTIVE_REVISION}' health and provisioning state..."
+          az containerapp revision show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --revision "${ACTIVE_REVISION}" \
+            -o json > active_revision.json
+
+          python3 - << 'PYEOF'
+          import json, sys
+
+          with open("active_revision.json", "r", encoding="utf-8") as f:
+              rev = json.load(f)
+          with open("post_deploy_staging.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
+
+          min_replicas = (((app.get("properties") or {}).get("template") or {}).get("scale") or {}).get("minReplicas", 0)
+          props = rev.get("properties") or {}
+          prov_state = props.get("provisioningState")
+          health_state = props.get("healthState")
+          running_state = props.get("runningState")
+          active = props.get("active")
+          replicas = props.get("replicas") or 0
+
+          print(f"Revision Provisioning: {prov_state}")
+          print(f"Revision Active:       {active}")
+          print(f"Revision Health:       {health_state}")
+          print(f"Revision RunningState: {running_state}")
+          print(f"Revision Replicas:     {replicas} (minReplicas={min_replicas})")
+
+          if prov_state != "Provisioned" or active is not True:
+              print(f"::error::Revision is not provisioned/active (provisioningState={prov_state}, active={active}).", file=sys.stderr)
+              sys.exit(1)
+
+          if replicas >= 1:
+              if health_state != "Healthy":
+                  print(f"::error::Active replica(s) present (replicas={replicas}) but healthState='{health_state}' (expected 'Healthy').", file=sys.stderr)
+                  sys.exit(1)
+              if running_state not in ("Running", "RunningAtMaxScale"):
+                  print(f"::error::Active replica(s) present but runningState='{running_state}' (expected Running).", file=sys.stderr)
+                  sys.exit(1)
+              print("Control-plane revision check: PASSED (Healthy with active replica; still requires authorized HTTP acceptance).")
+          else:
+              if min_replicas != 0:
+                  print(f"::error::Revision has 0 replicas despite minReplicas={min_replicas}.", file=sys.stderr)
+                  sys.exit(1)
+              if health_state not in ("Healthy", "None"):
+                  print(f"::error::Revision scaled to 0 with unacceptable healthState='{health_state}'.", file=sys.stderr)
+                  sys.exit(1)
+              if running_state not in ("Running", "ScaledToZero", "RunningAtMaxScale"):
+                  print(f"::error::Revision scaled to 0 with unacceptable runningState='{running_state}'.", file=sys.stderr)
+                  sys.exit(1)
+              print("Control-plane revision check: PASSED (Provisioned/Active, scaled to 0 per minReplicas=0; does NOT prove live application HTTP health).")
+          PYEOF
+
+          echo "=== Informational Console Logs (diagnostic only; does not constitute application HTTP acceptance) ==="
+          az containerapp logs show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --type console \
+            --tail 30 || echo "Diagnostic note: Console logs unavailable (revision may be scaled to 0)."
+
+      - name: 7. Generate Staging Deployment Summary
+        if: always()
+        run: |
+          cat << EOF >> "$GITHUB_STEP_SUMMARY"
+          ## Azure Staging Deployment Summary
+
+          * **Target Application:** \`${STAGING_APP_NAME}\` (Dedicated Staging)
+          * **Environment:** \`${EXPECTED_ENV_NAME}\` (WorkloadProfiles / Consumption)
+          * **Source Git Commit SHA:** \`${COMMIT_SHA:-Unset}\`
+          * **Deterministic Staging Tag:** \`${EXPECTED_STAGING_TAG:-Unset}\`
+          * **Cryptographic Image Digest:** \`${IMAGE_DIGEST:-Unresolved}\`
+          * **Deployed Reference:** \`${PINNED_IMAGE:-Unresolved}\`
+          * **Active Revision:** \`$(cat staging_revision.txt 2>/dev/null || echo 'Unresolved')\`
+          * **Container Runtime Port:** \`3000\`
+          * **Ingress IP Restrictions:** \`Enforced (Strict /32 Allowlist)\`
+          * **Control-Plane Verification:** \`Revision Provisioned, Pinned Digest, Port 3000 & Env Verified (Not Application HTTP Proof)\`
+          * **Staging Feature Gates:** \`Instagram=true\`, \`Facebook=true\`, \`TikTok=true\` (Active on staging only)
+          * **Production Application:** \`${PROD_APP_NAME}\` (Untouched, Unchanged)
+
+          ### Required Application-Level HTTP Acceptance Checks (Run from Allowlisted Network)
+          * **Frontend UI:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/\`
+          * **Health Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/health\`
+          * **Readiness Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/ready\`
+          * **Capabilities Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/api/capabilities\` (expect \`instagram: true, facebook: true, tiktok: true\`)
+          * **Negative Allowlist Test (from non-allowlisted IP):** expect \`HTTP 403\`
+          EOF
