@@ -110,19 +110,32 @@ jobs:
               sys.exit(1)
           print(f"Confirmed: Ingress targetPort matches container runtime port ({target_port}).")
 
-          # 3. Ingress Security Restrictions Prerequisite check
+          # 3. Ingress Security Restrictions Prerequisite check (Deny-by-default via Allow-only /32 rules)
+          import ipaddress
           ip_rules = ingress.get("ipSecurityRestrictions") or []
           if not ip_rules:
               print("::error::Staging ingress security restrictions are MISSING. Ingress restriction is an enforced deployment prerequisite to prevent unauthorized public access.", file=sys.stderr)
               print("Configure access restrictions via 'az containerapp ingress access-restriction set' before deploying.", file=sys.stderr)
               sys.exit(1)
 
-          has_unrestricted_rule = any(r.get("ipAddressRange") in ["0.0.0.0/0", "::/0"] and r.get("action") == "Allow" for r in ip_rules)
-          if has_unrestricted_rule:
-              print("::error::Staging ingress contains an unrestricted 0.0.0.0/0 Allow rule. Access must be restricted to authorized IPs as a deployment prerequisite.", file=sys.stderr)
-              sys.exit(1)
+          for r in ip_rules:
+              action = r.get("action")
+              cidr = r.get("ipAddressRange", "")
+              if action != "Allow":
+                  print(f"::error::Rule '{r.get('name')}' has action '{action}'. In Azure Container Apps, mixing Deny rules alters implicit default-deny behavior; only explicit /32 Allow rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+              try:
+                  net = ipaddress.IPv4Network(cidr, strict=True)
+              except ValueError:
+                  print(f"::error::Allow rule '{r.get('name')}' has invalid IPv4 CIDR '{cidr}'. Only strict IPv4 /32 host rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+              if net.prefixlen != 32 or str(net.network_address) == "0.0.0.0":
+                  print(f"::error::Allow rule '{r.get('name')}' uses '{cidr}'. Only explicit /32 IPv4 host allowlist rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
 
-          print(f"Confirmed: Staging ingress has {len(ip_rules)} active IP security restriction rules configured.")
+          print(f"Confirmed: Staging ingress (external={ingress.get('external')}, effective default=Deny) has {len(ip_rules)} strict /32 Allow rule(s):")
+          for r in ip_rules:
+              print(f"  - {r.get('name')}: {r.get('action')} {r.get('ipAddressRange')}")
           PYEOF
 
       - name: 4. Verify Image Existence, Provenance & Resolve Immutable Digest
@@ -177,22 +190,22 @@ jobs:
           echo "Authenticating Docker to ACR '${ACR_NAME}' for image configuration inspection..."
           az acr login --name "${ACR_NAME}"
 
-          echo "Pulling '${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}' to inspect container configuration..."
-          if ! docker pull "${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}" 2>pull_err.log; then
-            echo "::error::Fail-closed: Failed to pull staging image from ACR for image configuration inspection." >&2
+          echo "Pulling '${PINNED_IMAGE}' by immutable digest to inspect container configuration..."
+          if ! docker pull "${PINNED_IMAGE}" 2>pull_err.log; then
+            echo "::error::Fail-closed: Failed to pull staging image by digest from ACR for image configuration inspection." >&2
             cat pull_err.log >&2
             exit 1
           fi
 
           echo "Inspecting image configuration labels via docker inspect..."
-          if ! docker inspect --format '{{json .Config.Labels}}' "${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}" > staging_labels.json 2>inspect_err.log; then
-            echo "::error::Fail-closed: docker inspect failed on '${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}'." >&2
+          if ! docker inspect --format '{{json .Config.Labels}}' "${PINNED_IMAGE}" > staging_labels.json 2>inspect_err.log; then
+            echo "::error::Fail-closed: docker inspect failed on '${PINNED_IMAGE}'." >&2
             cat inspect_err.log >&2
             exit 1
           fi
 
           if [ ! -s staging_labels.json ]; then
-            echo "::error::Fail-closed: docker inspect returned empty output for '${ACR_LOGIN_SERVER}/reeva:${EXPECTED_STAGING_TAG}'." >&2
+            echo "::error::Fail-closed: docker inspect returned empty output for '${PINNED_IMAGE}'." >&2
             exit 1
           fi
 
@@ -252,69 +265,164 @@ jobs:
 
           echo "Deployment update command completed successfully."
 
-      - name: 6. Verify Staging Ingress & Live Endpoints
+      - name: 6. Verify Staging Revision, Image Digest & Control-Plane Health
         run: |
           set -euo pipefail
-          echo "Auditing post-deployment staging container app..."
+          echo "Auditing post-deployment staging container app via Azure control plane..."
           az containerapp show \
             --name "${STAGING_APP_NAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             -o json > post_deploy_staging.json
 
           python3 - << 'PYEOF'
-          import json, sys
+          import json, os, sys
 
           with open("post_deploy_staging.json", "r", encoding="utf-8") as f:
               app = json.load(f)
 
           props = app.get("properties") or {}
-          if props.get("provisioningState") != "Succeeded":
-              print(f"::error::Staging app provisioningState is '{props.get('provisioningState')}'.", file=sys.stderr)
+          prov_state = props.get("provisioningState")
+          if prov_state != "Succeeded":
+              print(f"::error::Staging app provisioningState is '{prov_state}'.", file=sys.stderr)
               sys.exit(1)
 
-          ingress = (props.get("configuration") or {}).get("ingress") or {}
+          cfg = props.get("configuration") or {}
+          ingress = cfg.get("ingress") or {}
           fqdn = ingress.get("fqdn")
           if not fqdn:
               print("::error::Staging app has no active ingress FQDN.", file=sys.stderr)
               sys.exit(1)
 
-          print(f"Staging Ingress FQDN: https://{fqdn}")
-          print(f"Active Revision:      {props.get('latestRevisionName')}")
+          if ingress.get("targetPort") != 3000:
+              print(f"::error::Post-deploy ingress targetPort is {ingress.get('targetPort')}, expected 3000.", file=sys.stderr)
+              sys.exit(1)
+
+          import ipaddress
+          ip_rules = ingress.get("ipSecurityRestrictions") or []
+          if not ip_rules:
+              print("::error::Post-deploy ingress IP security restrictions are missing.", file=sys.stderr)
+              sys.exit(1)
+          for r in ip_rules:
+              cidr = r.get("ipAddressRange", "")
+              if r.get("action") != "Allow":
+                  print(f"::error::Post-deploy rule '{r.get('name')}' has action '{r.get('action')}'. Only Allow-only /32 rules guarantee default-deny in ACA.", file=sys.stderr)
+                  sys.exit(1)
+              try:
+                  net = ipaddress.IPv4Network(cidr, strict=True)
+              except ValueError:
+                  print(f"::error::Post-deploy Allow rule '{r.get('name')}' has invalid IPv4 CIDR '{cidr}'.", file=sys.stderr)
+                  sys.exit(1)
+              if net.prefixlen != 32 or str(net.network_address) == "0.0.0.0":
+                  print(f"::error::Post-deploy Allow rule '{r.get('name')}' uses '{cidr}'. Only explicit /32 IPv4 host rules are permitted.", file=sys.stderr)
+                  sys.exit(1)
+
+          containers = (props.get("template") or {}).get("containers") or []
+          if not containers:
+              print("::error::Staging app template contains no containers.", file=sys.stderr)
+              sys.exit(1)
+
+          deployed_image = containers[0].get("image") or ""
+          expected_image = os.environ["PINNED_IMAGE"]
+          if deployed_image != expected_image:
+              print(f"::error::Deployed image '{deployed_image}' does not match pinned digest '{expected_image}'.", file=sys.stderr)
+              sys.exit(1)
+
+          env_map = {e.get("name"): e.get("value") for e in (containers[0].get("env") or []) if e.get("name")}
+          expected_envs = {
+              "NODE_ENV": "production",
+              "PORT": "3000",
+              "REEVA_ENABLE_INSTAGRAM": "true",
+              "REEVA_ENABLE_FACEBOOK": "true",
+              "REEVA_ENABLE_TIKTOK": "true",
+              "REEVA_ENABLE_AUDIO_ONLY": "false",
+              "MAX_GLOBAL_EXTRACTION_CONCURRENCY": "3",
+              "MAX_IP_EXTRACTION_CONCURRENCY": "2",
+              "MAX_GLOBAL_STREAM_CONCURRENCY": "10",
+              "MAX_IP_STREAM_CONCURRENCY": "3",
+          }
+          for k, v in expected_envs.items():
+              if env_map.get(k) != v:
+                  print(f"::error::Staging env '{k}' is '{env_map.get(k)}', expected '{v}'.", file=sys.stderr)
+                  sys.exit(1)
+
+          latest_rev = props.get("latestRevisionName") or ""
+          ready_rev = props.get("latestReadyRevisionName") or ""
+          if not latest_rev or latest_rev != ready_rev:
+              print(f"::error::Latest revision '{latest_rev}' is not yet ready revision '{ready_rev}'.", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Staging Ingress FQDN: https://{fqdn} (external={ingress.get('external')})")
+          print(f"Active Revision:      {latest_rev}")
+          print(f"Deployed Image:       {deployed_image}")
+          print("Confirmed: Strict /32 IP allowlist, targetPort 3000, pinned digest, and all 10 staging env vars are active.")
+          print("NOTE: Azure control-plane verification does NOT prove application-level HTTP health; run /health, /ready, and /api/capabilities from an allowlisted network.")
           with open("staging_fqdn.txt", "w", encoding="utf-8") as out:
               out.write(fqdn)
+          with open("staging_revision.txt", "w", encoding="utf-8") as out:
+              out.write(latest_rev)
           PYEOF
 
-          STAGING_FQDN=$(cat staging_fqdn.txt)
+          ACTIVE_REVISION=$(cat staging_revision.txt)
+          echo "Inspecting active revision '${ACTIVE_REVISION}' health and provisioning state..."
+          az containerapp revision show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --revision "${ACTIVE_REVISION}" \
+            -o json > active_revision.json
 
-          echo "Waiting 10s for container startup and readiness probes..."
-          sleep 10
+          python3 - << 'PYEOF'
+          import json, sys
 
-          echo "Testing health probe: https://${STAGING_FQDN}/health"
-          curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/health"
-          echo ""
+          with open("active_revision.json", "r", encoding="utf-8") as f:
+              rev = json.load(f)
+          with open("post_deploy_staging.json", "r", encoding="utf-8") as f:
+              app = json.load(f)
 
-          echo "Testing readiness probe: https://${STAGING_FQDN}/ready"
-          curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/ready"
-          echo ""
+          min_replicas = (((app.get("properties") or {}).get("template") or {}).get("scale") or {}).get("minReplicas", 0)
+          props = rev.get("properties") or {}
+          prov_state = props.get("provisioningState")
+          health_state = props.get("healthState")
+          running_state = props.get("runningState")
+          active = props.get("active")
+          replicas = props.get("replicas") or 0
 
-          echo "Testing capabilities: https://${STAGING_FQDN}/api/capabilities"
-          CAP_JSON=$(curl -fsSL --retry 3 --retry-delay 5 "https://${STAGING_FQDN}/api/capabilities")
-          echo "Capabilities response: ${CAP_JSON}"
+          print(f"Revision Provisioning: {prov_state}")
+          print(f"Revision Active:       {active}")
+          print(f"Revision Health:       {health_state}")
+          print(f"Revision RunningState: {running_state}")
+          print(f"Revision Replicas:     {replicas} (minReplicas={min_replicas})")
 
-          # Verify Instagram, Facebook, and TikTok feature gates are active in staging
-          if ! echo "${CAP_JSON}" | grep -q '"instagram":true'; then
-            echo "::error::Verification failed: Instagram feature gate is not enabled in staging!" >&2
-            exit 1
-          fi
-          if ! echo "${CAP_JSON}" | grep -q '"facebook":true'; then
-            echo "::error::Verification failed: Facebook feature gate is not enabled in staging!" >&2
-            exit 1
-          fi
-          if ! echo "${CAP_JSON}" | grep -q '"tiktok":true'; then
-            echo "::error::Verification failed: TikTok feature gate is not enabled in staging!" >&2
-            exit 1
-          fi
-          echo "Confirmed: 'instagram: true', 'facebook: true', and 'tiktok: true' are active on staging."
+          if prov_state != "Provisioned" or active is not True:
+              print(f"::error::Revision is not provisioned/active (provisioningState={prov_state}, active={active}).", file=sys.stderr)
+              sys.exit(1)
+
+          if replicas >= 1:
+              if health_state != "Healthy":
+                  print(f"::error::Active replica(s) present (replicas={replicas}) but healthState='{health_state}' (expected 'Healthy').", file=sys.stderr)
+                  sys.exit(1)
+              if running_state not in ("Running", "RunningAtMaxScale"):
+                  print(f"::error::Active replica(s) present but runningState='{running_state}' (expected Running).", file=sys.stderr)
+                  sys.exit(1)
+              print("Control-plane revision check: PASSED (Healthy with active replica; still requires authorized HTTP acceptance).")
+          else:
+              if min_replicas != 0:
+                  print(f"::error::Revision has 0 replicas despite minReplicas={min_replicas}.", file=sys.stderr)
+                  sys.exit(1)
+              if health_state not in ("Healthy", "None"):
+                  print(f"::error::Revision scaled to 0 with unacceptable healthState='{health_state}'.", file=sys.stderr)
+                  sys.exit(1)
+              if running_state not in ("Running", "ScaledToZero", "RunningAtMaxScale"):
+                  print(f"::error::Revision scaled to 0 with unacceptable runningState='{running_state}'.", file=sys.stderr)
+                  sys.exit(1)
+              print("Control-plane revision check: PASSED (Provisioned/Active, scaled to 0 per minReplicas=0; does NOT prove live application HTTP health).")
+          PYEOF
+
+          echo "=== Informational Console Logs (diagnostic only; does not constitute application HTTP acceptance) ==="
+          az containerapp logs show \
+            --name "${STAGING_APP_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --type console \
+            --tail 30 || echo "Diagnostic note: Console logs unavailable (revision may be scaled to 0)."
 
       - name: 7. Generate Staging Deployment Summary
         if: always()
@@ -328,14 +436,17 @@ jobs:
           * **Deterministic Staging Tag:** \`${EXPECTED_STAGING_TAG:-Unset}\`
           * **Cryptographic Image Digest:** \`${IMAGE_DIGEST:-Unresolved}\`
           * **Deployed Reference:** \`${PINNED_IMAGE:-Unresolved}\`
+          * **Active Revision:** \`$(cat staging_revision.txt 2>/dev/null || echo 'Unresolved')\`
           * **Container Runtime Port:** \`3000\`
-          * **Ingress IP Restrictions:** \`Enforced\`
+          * **Ingress IP Restrictions:** \`Enforced (Strict /32 Allowlist)\`
+          * **Control-Plane Verification:** \`Revision Provisioned, Pinned Digest, Port 3000 & Env Verified (Not Application HTTP Proof)\`
           * **Staging Feature Gates:** \`Instagram=true\`, \`Facebook=true\`, \`TikTok=true\` (Active on staging only)
           * **Production Application:** \`${PROD_APP_NAME}\` (Untouched, Unchanged)
 
-          ### Live Staging Acceptance Endpoints
+          ### Required Application-Level HTTP Acceptance Checks (Run from Allowlisted Network)
           * **Frontend UI:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/\`
-          * **Capabilities Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/api/capabilities\`
-          * **Readiness Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/ready\`
-          * **Health Probe:** \`https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/health\`
+          * **Health Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/health\`
+          * **Readiness Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/ready\`
+          * **Capabilities Probe:** \`curl -fsSL https://$(cat staging_fqdn.txt 2>/dev/null || echo '<staging-fqdn>')/api/capabilities\` (expect \`instagram: true, facebook: true, tiktok: true\`)
+          * **Negative Allowlist Test (from non-allowlisted IP):** expect \`HTTP 403\`
           EOF
