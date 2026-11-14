@@ -190,6 +190,9 @@ jobs:
           echo "Authenticating Docker to ACR '${ACR_NAME}' for image configuration inspection..."
           az acr login --name "${ACR_NAME}"
 
+          IMAGE_DIGEST=$(python3 -c 'import json; print(json.load(open("staging_manifest.json"))["digest"])')
+          PINNED_IMAGE="${ACR_LOGIN_SERVER}/reeva@${IMAGE_DIGEST}"
+
           echo "Pulling '${PINNED_IMAGE}' by immutable digest to inspect container configuration..."
           if ! docker pull "${PINNED_IMAGE}" 2>pull_err.log; then
             echo "::error::Fail-closed: Failed to pull staging image by digest from ACR for image configuration inspection." >&2
