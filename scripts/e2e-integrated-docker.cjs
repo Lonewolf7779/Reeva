@@ -293,19 +293,21 @@ async function run() {
             }
             assert.equal(completed, true, `Operation ${item.op} failed to complete (status: ${lastStatus})`);
 
-            const beforeFiles = new Set(fs.readdirSync(downloadDir));
+            const opDownloadDir = path.join(downloadDir, item.op);
+            fs.mkdirSync(opDownloadDir, { recursive: true });
+            await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: opDownloadDir });
+
             await cdp.evalJs(`document.getElementById('workspace-download').click()`);
             let savedFile = null;
-            for (let i = 0; i < 150; i++) {
+            for (let i = 0; i < 100; i++) {
                 await delay(100);
-                const current = fs.readdirSync(downloadDir).filter((f) => !f.endsWith(".crdownload") && !f.endsWith(".tmp"));
-                const added = current.find((f) => !beforeFiles.has(f));
-                if (added) {
-                    savedFile = path.join(downloadDir, added);
+                const current = fs.readdirSync(opDownloadDir).filter((f) => !f.endsWith(".crdownload") && !f.endsWith(".tmp"));
+                if (current.length > 0) {
+                    savedFile = path.join(opDownloadDir, current[0]);
                     break;
                 }
             }
-            assert.ok(savedFile && fs.existsSync(savedFile), `Saved download file missing for ${item.op} (dir=${JSON.stringify(fs.readdirSync(downloadDir))}, status=${await cdp.evalJs("document.getElementById('workspace-status').textContent")})`);
+            assert.ok(savedFile && fs.existsSync(savedFile), `Saved download file missing for ${item.op} (dir=${JSON.stringify(fs.readdirSync(opDownloadDir))}, status=${await cdp.evalJs("document.getElementById('workspace-status').textContent")})`);
             const fileBytes = fs.statSync(savedFile).size;
             assert.ok(fileBytes > 0, `Downloaded file is 0 bytes for ${item.op}`);
 
