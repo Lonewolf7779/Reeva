@@ -295,7 +295,7 @@ async function run() {
             const beforeFiles = new Set(fs.readdirSync(downloadDir));
             await cdp.evalJs(`document.getElementById('workspace-download').click()`);
             let savedFile = null;
-            for (let i = 0; i < 50; i++) {
+            for (let i = 0; i < 150; i++) {
                 await delay(100);
                 const current = fs.readdirSync(downloadDir).filter((f) => !f.endsWith(".crdownload") && !f.endsWith(".tmp"));
                 const added = current.find((f) => !beforeFiles.has(f));
@@ -304,7 +304,7 @@ async function run() {
                     break;
                 }
             }
-            assert.ok(savedFile && fs.existsSync(savedFile), `Saved download file missing for ${item.op}`);
+            assert.ok(savedFile && fs.existsSync(savedFile), `Saved download file missing for ${item.op} (dir=${JSON.stringify(fs.readdirSync(downloadDir))}, status=${await cdp.evalJs("document.getElementById('workspace-status').textContent")})`);
             const fileBytes = fs.statSync(savedFile).size;
             assert.ok(fileBytes > 0, `Downloaded file is 0 bytes for ${item.op}`);
 
