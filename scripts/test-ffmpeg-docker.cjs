@@ -129,7 +129,102 @@ async function runRealDockerIntegrationTests() {
         assert.equal(limiter.getActiveCount(), 0);
         console.log("PASS [7/7] real FFmpeg cancellation cleaned up file and released slot");
 
-        console.log("ALL REAL FFMPEG DOCKER INTEGRATION TESTS PASSED (7/7).");
+        // 9. Test Phase 2B Full HTTP Lifecycle: Upload -> ffprobe -> FFmpeg -> Retrieve -> Expire -> Cleanup
+        const http = require("http");
+        const app = require("../server.cjs");
+        app.setMediaProcessingEnabled(true);
+        const manager = app.getMediaJobManager();
+        const origRetention = manager.retentionMs;
+        manager.retentionMs = 2000;
+
+        const testServer = http.createServer(app);
+        await new Promise((r) => testServer.listen(0, "127.0.0.1", r));
+        const port = testServer.address().port;
+
+        try {
+            const videoBytes = fs.readFileSync(inputPath);
+            const boundary = "----ReevaDockerPhase2B";
+            const body = Buffer.concat([
+                Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="profile"\r\n\r\n${JSON.stringify({ operation: "extract_audio", options: { format: "mp3", bitrate: "128k" } })}\r\n`),
+                Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="synth.mp4"\r\nContent-Type: video/mp4\r\n\r\n`),
+                videoBytes,
+                Buffer.from(`\r\n--${boundary}--\r\n`)
+            ]);
+
+            const createRes = await new Promise((resolve, reject) => {
+                const req = http.request({
+                    host: "127.0.0.1",
+                    port,
+                    method: "POST",
+                    path: "/api/media/jobs",
+                    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "Content-Length": String(body.length) }
+                }, (res) => {
+                    const chunks = [];
+                    res.on("data", (c) => chunks.push(c));
+                    res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(Buffer.concat(chunks).toString()) }));
+                });
+                req.on("error", reject);
+                req.end(body);
+            });
+            assert.equal(createRes.status, 202);
+            const { job, capabilityToken } = createRes.json;
+
+            let statusJson;
+            for (let i = 0; i < 40; i++) {
+                statusJson = await new Promise((resolve, reject) => {
+                    http.get({
+                        host: "127.0.0.1",
+                        port,
+                        path: `/api/media/jobs/${job.jobId}`,
+                        headers: { Authorization: `Bearer ${capabilityToken}` }
+                    }, (res) => {
+                        const chunks = [];
+                        res.on("data", (c) => chunks.push(c));
+                        res.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString())));
+                    }).on("error", reject);
+                });
+                if (statusJson.job.status === "completed") break;
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            assert.equal(statusJson.job.status, "completed");
+
+            const outRes = await new Promise((resolve, reject) => {
+                http.get({
+                    host: "127.0.0.1",
+                    port,
+                    path: `/api/media/jobs/${job.jobId}/output?download=1`,
+                    headers: { Authorization: `Bearer ${capabilityToken}` }
+                }, (res) => {
+                    const chunks = [];
+                    res.on("data", (c) => chunks.push(c));
+                    res.on("end", () => resolve({ status: res.statusCode, bytes: Buffer.concat(chunks).length }));
+                }).on("error", reject);
+            });
+            assert.equal(outRes.status, 200);
+            assert.ok(outRes.bytes > 1000, "Expected valid MP3 output bytes");
+
+            await new Promise((r) => setTimeout(r, 2200));
+            await manager.sweepExpired();
+            const expiredRes = await new Promise((resolve, reject) => {
+                http.get({
+                    host: "127.0.0.1",
+                    port,
+                    path: `/api/media/jobs/${job.jobId}/output`,
+                    headers: { Authorization: `Bearer ${capabilityToken}` }
+                }, (res) => {
+                    res.resume();
+                    res.on("end", () => resolve(res.statusCode));
+                }).on("error", reject);
+            });
+            assert.equal(expiredRes, 410);
+            console.log("PASS [8/8] Phase 2B full HTTP lifecycle (Upload -> ffprobe -> FFmpeg -> Retrieve -> Expire -> Cleanup)");
+        } finally {
+            manager.retentionMs = origRetention;
+            app.setMediaProcessingEnabled(false);
+            await new Promise((r) => testServer.close(r));
+        }
+
+        console.log("ALL REAL FFMPEG DOCKER INTEGRATION TESTS PASSED (8/8).");
     } finally {
         await safeUnlink(inputPath);
         await safeUnlink(corruptPath);

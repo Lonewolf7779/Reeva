@@ -32,6 +32,9 @@ const { EXTRACTION_ERROR_CODES, DEFAULT_ERROR_MESSAGES } = require("./lib/extrac
 const { REEVA_TEMP_DIR, cleanStaleTempFiles } = require("./lib/extraction/adapters/youtube.cjs");
 const { stopDefaultEgressProxy } = require("./lib/extraction/egress-proxy.cjs");
 const { resolveEmbed, EmbedError, SUPPORTED_EMBED_PLATFORMS } = require("./lib/embed/index.cjs");
+const { MediaProcessingError, safeUnlink } = require("./lib/media-processor/ffmpeg-runner.cjs");
+const { receiveStreamingMediaUpload } = require("./lib/media-processor/multipart-upload.cjs");
+const { MediaJobManager } = require("./lib/media-processor/job-manager.cjs");
 
 // Clean stale temporary media artifacts on server startup
 cleanStaleTempFiles().catch((err) => {
@@ -199,10 +202,53 @@ const mediaStreamConcurrencyLimiter = createConcurrencyLimiter({
     maxPerIp: serverConfig.maxIpStreamConcurrency
 });
 
+// Phase 2B: Upload & Media Processing Limiters and Single-Instance Job Manager
+let mediaProcessingEnabled = Boolean(serverConfig.features.mediaProcessing);
+const mediaJobManager = new MediaJobManager({
+    mediaRegistry: defaultRegistry
+});
+
+const mediaUploadLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    limit: parseInt(process.env.RATE_LIMIT_MEDIA_UPLOAD_MAX || "15", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    ipv6Subnet: 56,
+    message: {
+        error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many media upload requests. Please wait a few minutes."
+        }
+    }
+});
+
+const mediaJobStatusLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000,
+    limit: parseInt(process.env.RATE_LIMIT_MEDIA_JOB_STATUS_MAX || "120", 10),
+    standardHeaders: true,
+    legacyHeaders: false,
+    ipv6Subnet: 56,
+    message: {
+        error: {
+            code: "RATE_LIMIT_EXCEEDED",
+            message: "Too many job status requests. Please wait a moment."
+        }
+    }
+});
+
+const mediaUploadConcurrencyLimiter = createConcurrencyLimiter({
+    maxGlobal: parseInt(process.env.MAX_GLOBAL_UPLOAD_CONCURRENCY || "6", 10),
+    maxPerIp: parseInt(process.env.MAX_IP_UPLOAD_CONCURRENCY || "2", 10)
+});
+
 // ================== METHOD ENFORCEMENT ==================
-// Reject non-GET HTTP methods cleanly on API endpoints
+// Reject non-GET HTTP methods cleanly on API endpoints, allowing POST only on Phase 2B job routes
 app.use("/api", (req, res, next) => {
-    if (req.method !== "GET" && req.method !== "HEAD") {
+    const isAllowedPostRoute = req.method === "POST" && (
+        req.path === "/media/jobs" ||
+        /^\/media\/jobs\/[^/]+\/cancel$/.test(req.path)
+    );
+    if (req.method !== "GET" && req.method !== "HEAD" && !isAllowedPostRoute) {
         return res.status(405).json({
             error: {
                 code: "METHOD_NOT_ALLOWED",
@@ -1310,6 +1356,150 @@ app.get("/api/embed/:platform", extractionLimiter, extractionConcurrencyLimiter,
     }
 });
 
+// ================== PHASE 2B: FEATURE-GATED MEDIA PROCESSING JOBS ==================
+function requireMediaProcessingEnabled(req, res, next) {
+    if (!mediaProcessingEnabled) {
+        return res.status(403).json({
+            error: {
+                code: "FEATURE_DISABLED",
+                message: "Media processing is disabled on this server."
+            },
+            requestId: req.id
+        });
+    }
+    if (isShuttingDown) {
+        return res.status(503).json({
+            error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "Server is shutting down. Please retry on another instance."
+            },
+            requestId: req.id
+        });
+    }
+    return next();
+}
+
+function extractJobCapabilityToken(req) {
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")) {
+        return authHeader.slice(7).trim();
+    }
+    const headerToken = req.headers["x-job-token"];
+    if (typeof headerToken === "string" && headerToken.trim()) {
+        return headerToken.trim();
+    }
+    return "";
+}
+
+function sendMediaProcessingError(req, res, err) {
+    if (err instanceof MediaProcessingError) {
+        return res.status(err.statusCode || 400).json({
+            error: {
+                code: err.code,
+                message: err.publicMessage
+            },
+            requestId: req.id
+        });
+    }
+    return res.status(500).json({
+        error: {
+            code: "MEDIA_PROCESSING_ERROR",
+            message: "Media processing request failed."
+        },
+        requestId: req.id
+    });
+}
+
+app.post(
+    "/api/media/jobs",
+    requireMediaProcessingEnabled,
+    mediaUploadLimiter,
+    mediaUploadConcurrencyLimiter,
+    async (req, res) => {
+        let uploadResult = null;
+        try {
+            uploadResult = await receiveStreamingMediaUpload(req, app.mediaUploadOptions || {});
+
+            let profile;
+            try {
+                if (uploadResult.fields.profile) {
+                    profile = JSON.parse(uploadResult.fields.profile);
+                } else if (uploadResult.fields.operation) {
+                    const opts = uploadResult.fields.options ? JSON.parse(uploadResult.fields.options) : {};
+                    profile = { operation: uploadResult.fields.operation, options: opts };
+                } else {
+                    throw new MediaProcessingError(
+                        "INVALID_PROFILE",
+                        "Missing processing profile specification.",
+                        { statusCode: 400 }
+                    );
+                }
+            } catch (parseErr) {
+                await safeUnlink(uploadResult.uploadPath);
+                if (parseErr instanceof MediaProcessingError) throw parseErr;
+                throw new MediaProcessingError(
+                    "INVALID_PROFILE",
+                    "Malformed processing profile JSON.",
+                    { statusCode: 400 }
+                );
+            }
+
+            const { job, capabilityToken } = await mediaJobManager.createJob({
+                uploadPath: uploadResult.uploadPath,
+                profile
+            });
+
+            return res.status(202).json({
+                job,
+                capabilityToken,
+                requestId: req.id
+            });
+        } catch (err) {
+            if (uploadResult && uploadResult.uploadPath && !(err instanceof MediaProcessingError && err.code === "CONCURRENCY_LIMIT")) {
+                await safeUnlink(uploadResult.uploadPath);
+            }
+            logger.error({
+                requestId: req.id,
+                operation: "media_job_create",
+                status: "error",
+                code: (err && err.code) || "MEDIA_PROCESSING_ERROR"
+            });
+            return sendMediaProcessingError(req, res, err);
+        }
+    }
+);
+
+app.get("/api/media/jobs/:jobId", requireMediaProcessingEnabled, mediaJobStatusLimiter, (req, res) => {
+    try {
+        const token = extractJobCapabilityToken(req);
+        const job = mediaJobManager.getJobStatus(req.params.jobId, token);
+        return res.json({ job, requestId: req.id });
+    } catch (err) {
+        return sendMediaProcessingError(req, res, err);
+    }
+});
+
+app.post("/api/media/jobs/:jobId/cancel", requireMediaProcessingEnabled, mediaJobStatusLimiter, async (req, res) => {
+    try {
+        const token = extractJobCapabilityToken(req);
+        const job = await mediaJobManager.cancelJob(req.params.jobId, token);
+        return res.json({ job, requestId: req.id });
+    } catch (err) {
+        return sendMediaProcessingError(req, res, err);
+    }
+});
+
+app.get("/api/media/jobs/:jobId/output", requireMediaProcessingEnabled, mediaStreamLimiter, mediaStreamConcurrencyLimiter, async (req, res) => {
+    try {
+        const token = extractJobCapabilityToken(req);
+        const mediaEntry = mediaJobManager.getCompletedMediaEntry(req.params.jobId, token);
+        const isDownload = req.query.download === "1";
+        return streamRegisteredMedia(req, res, mediaEntry, isDownload);
+    } catch (err) {
+        return sendMediaProcessingError(req, res, err);
+    }
+});
+
 // ================== PUBLIC CAPABILITIES ENDPOINT ==================
 app.get("/api/capabilities", (req, res) => {
     res.json({
@@ -1324,7 +1514,8 @@ app.get("/api/capabilities", (req, res) => {
                 generic: Boolean(serverConfig.features.generic)
             },
             embedPlatforms: SUPPORTED_EMBED_PLATFORMS,
-            audioOnly: Boolean(serverConfig.features.audioOnly)
+            audioOnly: Boolean(serverConfig.features.audioOnly),
+            mediaProcessing: Boolean(mediaProcessingEnabled)
         }
     });
 });
@@ -1420,6 +1611,10 @@ function gracefulShutdown(signal = "SIGTERM", options = {}) {
             }
             activeStreamControllers.clear();
         }
+
+        try {
+            await mediaJobManager.shutdown();
+        } catch (_) {}
 
         let shutdownError = null;
 
@@ -1549,6 +1744,9 @@ app.serverConfig = serverConfig;
 app.gracefulShutdown = gracefulShutdown;
 app.getActiveExtractionControllers = () => activeExtractionControllers;
 app.getActiveStreamControllers = () => activeStreamControllers;
+app.getMediaJobManager = () => mediaJobManager;
+app.getMediaProcessingEnabled = () => mediaProcessingEnabled;
+app.setMediaProcessingEnabled = (val) => { mediaProcessingEnabled = Boolean(val); };
 app.getIsShuttingDown = () => isShuttingDown;
 app.getIsPreflightComplete = () => isPreflightComplete;
 app.setIsPreflightComplete = (val) => { isPreflightComplete = Boolean(val); };
