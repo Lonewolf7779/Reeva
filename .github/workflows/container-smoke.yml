@@ -63,9 +63,6 @@ jobs:
       - name: Run full automated test suite on Node.js 24
         run: npm test
 
-      - name: Run npm security audit against committed lockfile
-        run: npm audit --audit-level=low
-
       - name: Build production container image (linux/amd64)
         run: |
           set -euo pipefail
@@ -229,6 +226,9 @@ jobs:
           cat /tmp/reeva_container.log
           grep -q "Received SIGTERM. Starting graceful shutdown..." /tmp/reeva_container.log
           grep -q "Graceful shutdown completed successfully." /tmp/reeva_container.log
+
+      - name: Run npm security audit against committed lockfile
+        run: npm audit --audit-level=low
 
       - name: Collect container diagnostics on failure
         if: failure()
