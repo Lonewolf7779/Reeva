@@ -210,6 +210,56 @@ jobs:
             console.log("Verified HTTP 404 MEDIA_NOT_FOUND for unknown media ID.");
           '
 
+      - name: Run Phase 3.3 Real Browser + Real FFmpeg Integrated Verification
+        run: |
+          set -euo pipefail
+          INTEGRATED_CONTAINER="reeva-ci-integrated"
+          INTEGRATED_PORT="3101"
+          docker rm -f "${INTEGRATED_CONTAINER}" >/dev/null 2>&1 || true
+
+          cleanup_integrated() {
+            docker rm -f "${INTEGRATED_CONTAINER}" >/dev/null 2>&1 || true
+            rm -f /tmp/reeva_p33_synth.mp4 || true
+          }
+          trap cleanup_integrated EXIT
+
+          docker run -d \
+            --name "${INTEGRATED_CONTAINER}" \
+            --memory=1g \
+            --cpus=1.0 \
+            -p "127.0.0.1:${INTEGRATED_PORT}:3000" \
+            -e NODE_ENV=production \
+            -e PORT=3000 \
+            -e REEVA_ENABLE_MEDIA_PROCESSING=true \
+            "${IMAGE_TAG}"
+
+          for i in $(seq 1 30); do
+            CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${INTEGRATED_PORT}/ready" || true)"
+            if [ "${CODE}" = "200" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          docker exec "${INTEGRATED_CONTAINER}" /usr/local/bin/ffmpeg -y \
+            -f lavfi -i testsrc=duration=3:size=640x360:rate=24 \
+            -f lavfi -i sine=frequency=440:duration=3 \
+            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -shortest /tmp/synth_p33.mp4
+          docker cp "${INTEGRATED_CONTAINER}:/tmp/synth_p33.mp4" /tmp/reeva_p33_synth.mp4
+          docker exec "${INTEGRATED_CONTAINER}" rm -f /tmp/synth_p33.mp4
+
+          DISABLED_BASE_URL="http://127.0.0.1:${HOST_TEST_PORT}" \
+          ENABLED_BASE_URL="http://127.0.0.1:${INTEGRATED_PORT}" \
+          INTEGRATED_CONTAINER_NAME="${INTEGRATED_CONTAINER}" \
+          SYNTH_FIXTURE_PATH="/tmp/reeva_p33_synth.mp4" \
+          node scripts/e2e-integrated-docker.cjs
+
+          if docker logs "${INTEGRATED_CONTAINER}" 2>&1 | grep -qiE "Bearer [a-f0-9]{32,}"; then
+            echo "ERROR: Capability token leaked in container logs." >&2
+            exit 1
+          fi
+
       - name: Stop container and verify graceful SIGTERM shutdown
         run: |
           set -euo pipefail
