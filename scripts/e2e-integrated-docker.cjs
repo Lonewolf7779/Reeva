@@ -100,7 +100,7 @@ function ffprobeInContainer(containerName, localFilePath) {
         return JSON.parse(out);
     } finally {
         try {
-            execFileSync("docker", ["exec", containerName, "rm", "-f", containerTmp]);
+            execFileSync("docker", ["exec", "-u", "root", containerName, "rm", "-f", containerTmp]);
         } catch (_) {}
     }
 }
@@ -139,11 +139,16 @@ async function run() {
         `--remote-debugging-port=${cdpPort}`
     ];
     if (process.platform === "linux") {
-        chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage");
+        chromeArgs.push("--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage");
     }
     chromeArgs.push("about:blank");
 
-    const browserProc = spawn(chromeBin, chromeArgs, { stdio: "ignore" });
+    console.log("Launching browser:", chromeBin);
+    const browserProc = spawn(chromeBin, chromeArgs, { stdio: ["ignore", "ignore", "pipe"] });
+    let browserStderr = "";
+    browserProc.stderr.on("data", (d) => {
+        if (browserStderr.length < 4096) browserStderr += d.toString();
+    });
     const report = {
         browser: "",
         fixture: {
@@ -350,6 +355,9 @@ async function run() {
 
         cdp.ws.close();
         console.log("PHASE_3_3_INTEGRATED_REPORT=" + JSON.stringify(report, null, 2));
+    } catch (err) {
+        if (browserStderr) console.error("Browser stderr:", browserStderr);
+        throw err;
     } finally {
         try { browserProc.kill("SIGKILL"); } catch (_) {}
         await delay(300);
