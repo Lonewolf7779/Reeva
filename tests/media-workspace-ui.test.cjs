@@ -182,7 +182,8 @@ test("4. Full lifecycle: submit -> status polling -> secure Blob download & obje
         window: fakeWin,
         fetchFn,
         pollIntervalMs: 5,
-        maxPolls: 10
+        maxPolls: 10,
+        revokeDelayMs: 0
     });
     ctrl.setAvailability(true);
     doc.elements["workspace-file"].files = [{ name: "clip.mp4", size: 1024 }];
@@ -275,4 +276,98 @@ test("6. Security audit: no localStorage token storage, no unsafe DOM sinks, mob
     assert.equal(/\.innerHTML\s*=/.test(workspaceJs), false);
     assert.ok(html.includes('id="media-workspace"'));
     assert.ok(css.includes("@media (max-width: 768px)"));
+});
+
+test("7. Phase 3.1: audio bitrate contract, bounded download size, and deferred objectURL revocation", async () => {
+    // Contract parity: 320k is MP3-only (rejected for aac/opus)
+    assert.equal(api.buildMediaProfile("extract_audio", { format: "aac", bitrate: "320k" }).ok, false);
+    assert.equal(api.buildMediaProfile("extract_audio", { format: "opus", bitrate: "320k" }).ok, false);
+    assert.equal(api.buildMediaProfile("extract_audio", { format: "aac", bitrate: "192k" }).ok, true);
+
+    // Bounded download rejects oversized Content-Length before buffering blob
+    let blobCalled = false;
+    const oversizedRes = await api.fetchMediaJobOutputBlob("job_0123456789abcdef0123456789abcdef", "c".repeat(64), {
+        maxDownloadBytes: 100,
+        fetchFn: async () => ({
+            ok: true,
+            status: 200,
+            headers: { get: (h) => (h.toLowerCase() === "content-length" ? "500" : "") },
+            blob: async () => { blobCalled = true; return new Blob(["x"]); }
+        })
+    });
+    assert.equal(oversizedRes.success, false);
+    assert.equal(oversizedRes.code, "OUTPUT_TOO_LARGE");
+    assert.equal(blobCalled, false);
+
+    // Deferred objectURL revocation
+    const doc = createFakeDocument();
+    const jobId = "job_11112222333344445555666677778888";
+    const token = "d".repeat(64);
+    const revoked = [];
+    const fakeWin = {
+        URL: {
+            createObjectURL: () => "blob:deferred-url",
+            revokeObjectURL: (u) => revoked.push(u)
+        }
+    };
+    const ctrl = createWorkspaceController(doc, {
+        api,
+        window: fakeWin,
+        revokeDelayMs: 25,
+        pollIntervalMs: 5,
+        fetchFn: async (url) => {
+            if (url === "/api/media/jobs") {
+                return { ok: true, status: 202, json: async () => ({ job: { jobId, status: "queued" }, capabilityToken: token }) };
+            }
+            if (url === `/api/media/jobs/${jobId}`) {
+                return { ok: true, status: 200, json: async () => ({ job: { jobId, status: "completed", output: { sizeBytes: 10 } } }) };
+            }
+            return { ok: true, status: 200, headers: { get: () => 'attachment; filename="out.mp4"' }, blob: async () => new Blob(["ok"]) };
+        }
+    });
+    ctrl.setAvailability(true);
+    doc.elements["workspace-file"].files = [{ name: "v.mp4", size: 10 }];
+    await ctrl.handleSubmit();
+    await ctrl.handleDownload();
+    // Not revoked synchronously on click tick, but revoked after revokeDelayMs
+    assert.equal(revoked.length, 0);
+    await new Promise((r) => setTimeout(r, 45));
+    assert.deepEqual(revoked, ["blob:deferred-url"]);
+});
+
+test("8. Phase 3.1: feature disablement mid-flight and download cancellation races", async () => {
+    const doc = createFakeDocument();
+    const jobId = "job_aaaabbbbccccddddeeeeffff00001111";
+    const token = "e".repeat(64);
+    let cancelSent = false;
+
+    const ctrl = createWorkspaceController(doc, {
+        api,
+        pollIntervalMs: 5,
+        revokeDelayMs: 0,
+        fetchFn: async (url, opts = {}) => {
+            if (url === "/api/media/jobs") {
+                await new Promise((r) => setTimeout(r, 30));
+                return { ok: true, status: 202, json: async () => ({ job: { jobId, status: "queued" }, capabilityToken: token }) };
+            }
+            if (url === `/api/media/jobs/${jobId}/cancel`) {
+                cancelSent = true;
+                return { ok: true, status: 200, json: async () => ({ job: { jobId, status: "cancelled" } }) };
+            }
+            return { ok: true, status: 200, json: async () => ({ job: { jobId, status: "completed" } }) };
+        }
+    });
+
+    ctrl.setAvailability(true);
+    doc.elements["workspace-file"].files = [{ name: "v.mp4", size: 10 }];
+
+    const submitPromise = ctrl.handleSubmit();
+    await new Promise((r) => setTimeout(r, 10));
+    // Disable feature while upload is in-flight
+    ctrl.setAvailability(false);
+    await submitPromise;
+
+    assert.equal(ctrl.getIsBusy(), false);
+    assert.equal(ctrl.hasActiveCredentials(), false);
+    assert.equal(cancelSent, true);
 });

@@ -347,12 +347,22 @@
 
         if (op === "extract_audio") {
             const format = typeof opts.format === "string" ? opts.format.trim().toLowerCase() : "mp3";
-            if (!["mp3", "aac", "opus", "wav"].includes(format)) {
+            const allowedAudioBitrates = {
+                mp3: ["128k", "192k", "320k"],
+                aac: ["128k", "192k"],
+                opus: ["96k", "128k", "192k"],
+                wav: []
+            };
+            if (!Object.prototype.hasOwnProperty.call(allowedAudioBitrates, format)) {
                 return { ok: false, message: "Invalid audio format selected." };
             }
             const options = { format };
             if (format !== "wav" && typeof opts.bitrate === "string" && opts.bitrate.trim()) {
-                options.bitrate = opts.bitrate.trim().toLowerCase();
+                const bitrate = opts.bitrate.trim().toLowerCase();
+                if (!allowedAudioBitrates[format].includes(bitrate)) {
+                    return { ok: false, message: `Unsupported bitrate '${bitrate}' for ${format.toUpperCase()}.` };
+                }
+                options.bitrate = bitrate;
             }
             return { ok: true, profile: { operation: "extract_audio", options } };
         }
@@ -631,7 +641,31 @@
                 };
             }
 
+            const maxDownloadBytes = options.maxDownloadBytes || (250 * 1024 * 1024);
+            const rawLen = resp.headers && typeof resp.headers.get === "function"
+                ? resp.headers.get("content-length")
+                : null;
+            if (rawLen !== null && rawLen !== undefined && rawLen !== "") {
+                const declaredBytes = Number(rawLen);
+                if (Number.isFinite(declaredBytes) && declaredBytes > maxDownloadBytes) {
+                    return {
+                        success: false,
+                        statusCode: 413,
+                        code: "OUTPUT_TOO_LARGE",
+                        message: "Processed output exceeds browser download size limit."
+                    };
+                }
+            }
+
             const blob = await resp.blob();
+            if (blob && Number.isFinite(blob.size) && blob.size > maxDownloadBytes) {
+                return {
+                    success: false,
+                    statusCode: 413,
+                    code: "OUTPUT_TOO_LARGE",
+                    message: "Processed output exceeds browser download size limit."
+                };
+            }
             const disp = resp.headers && typeof resp.headers.get === "function"
                 ? (resp.headers.get("content-disposition") || "")
                 : "";

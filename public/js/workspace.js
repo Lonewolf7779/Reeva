@@ -31,6 +31,7 @@
         const fetchFn = options.fetchFn || (win && typeof win.fetch === "function" ? win.fetch.bind(win) : null);
         const pollIntervalMs = options.pollIntervalMs || DEFAULT_POLL_INTERVAL_MS;
         const maxPolls = options.maxPolls || DEFAULT_MAX_POLLS;
+        const revokeDelayMs = options.revokeDelayMs !== undefined ? options.revokeDelayMs : 1000;
         let maxUploadBytes = options.maxUploadBytes || DEFAULT_MAX_UPLOAD_BYTES;
 
         const el = {
@@ -67,7 +68,10 @@
 
         let isFeatureEnabled = false;
         let isBusy = false;
+        let isDownloading = false;
+        let operationSeq = 0;
         let activeAbortController = null;
+        let downloadAbortController = null;
         let activePollTimer = null;
         // Capability token lives strictly in closure memory, never in storage or URLs
         let activeJobCredentials = null; // { jobId, capabilityToken, expiresAt }
@@ -133,10 +137,16 @@
         }
 
         function clearActiveJob() {
+            operationSeq += 1;
             if (activePollTimer) {
                 clearTimeout(activePollTimer);
                 activePollTimer = null;
             }
+            if (downloadAbortController) {
+                try { downloadAbortController.abort(); } catch (_) {}
+                downloadAbortController = null;
+            }
+            isDownloading = false;
             activeJobCredentials = null;
             if (el.downloadBtn) {
                 el.downloadBtn.classList.add("hidden");
@@ -157,6 +167,11 @@
                     el.availabilityNotice.className = "workspace-availability available";
                 }
             } else {
+                if (activeAbortController) {
+                    try { activeAbortController.abort(); } catch (_) {}
+                    activeAbortController = null;
+                }
+                isBusy = false;
                 clearActiveJob();
                 setProgress(0, false);
                 el.section.classList.add("workspace-disabled");
@@ -202,8 +217,8 @@
             return {};
         }
 
-        async function pollJobStatus(jobId, capabilityToken, attempt = 0) {
-            if (!activeJobCredentials || activeJobCredentials.jobId !== jobId) return;
+        async function pollJobStatus(jobId, capabilityToken, attempt = 0, opSeq = operationSeq) {
+            if (opSeq !== operationSeq || !activeJobCredentials || activeJobCredentials.jobId !== jobId) return;
             if (attempt >= maxPolls) {
                 isBusy = false;
                 updateControlStates();
@@ -216,7 +231,7 @@
                 signal: activeAbortController ? activeAbortController.signal : undefined
             });
 
-            if (!activeJobCredentials || activeJobCredentials.jobId !== jobId) return;
+            if (opSeq !== operationSeq || !activeJobCredentials || activeJobCredentials.jobId !== jobId) return;
 
             if (!res.success) {
                 if (res.code === "ABORTED") return;
@@ -260,7 +275,7 @@
 
             setStatus(`Processing (${job.status})...`, "info");
             activePollTimer = setTimeout(() => {
-                pollJobStatus(jobId, capabilityToken, attempt + 1);
+                pollJobStatus(jobId, capabilityToken, attempt + 1, opSeq);
             }, pollIntervalMs);
         }
 
@@ -294,6 +309,7 @@
             }
 
             clearActiveJob();
+            const opSeq = ++operationSeq;
             isBusy = true;
             activeAbortController = new AbortController();
             updateControlStates();
@@ -307,10 +323,19 @@
                 fetchFn,
                 xhrFactory: options.xhrFactory,
                 onProgress: (pct) => {
+                    if (opSeq !== operationSeq) return;
                     setProgress(pct, true);
                     setStatus(`Uploading media... ${pct}%`, "info");
                 }
             });
+
+            if (opSeq !== operationSeq) {
+                // Stale submission finished after cancellation or feature disablement
+                if (submitRes.success && submitRes.job && submitRes.capabilityToken) {
+                    api.cancelMediaJob(submitRes.job.jobId, submitRes.capabilityToken, { fetchFn }).catch(() => {});
+                }
+                return;
+            }
 
             if (!submitRes.success) {
                 isBusy = false;
@@ -326,13 +351,14 @@
             };
             setProgress(100, false);
             setStatus("Upload complete. Queued for processing...", "info");
-            await pollJobStatus(submitRes.job.jobId, submitRes.capabilityToken, 0);
+            await pollJobStatus(submitRes.job.jobId, submitRes.capabilityToken, 0, opSeq);
         }
 
         async function handleCancel() {
-            if (!isBusy && !activeJobCredentials) return;
+            if (!isBusy && !activeJobCredentials && !isDownloading) return;
             if (activeAbortController) {
                 try { activeAbortController.abort(); } catch (_) {}
+                activeAbortController = null;
             }
             const creds = activeJobCredentials;
             clearActiveJob();
@@ -346,22 +372,38 @@
         }
 
         async function handleDownload() {
-            if (!activeJobCredentials) {
+            if (isDownloading) return;
+            if (!isFeatureEnabled || !activeJobCredentials) {
                 setStatus("No completed media output available.", "error");
                 return;
             }
             const { jobId, capabilityToken } = activeJobCredentials;
+            const opSeq = operationSeq;
+            isDownloading = true;
+            downloadAbortController = new AbortController();
             if (el.downloadBtn) el.downloadBtn.disabled = true;
             setStatus("Preparing secure download...", "info");
 
-            const res = await api.fetchMediaJobOutputBlob(jobId, capabilityToken, { fetchFn });
+            const res = await api.fetchMediaJobOutputBlob(jobId, capabilityToken, {
+                fetchFn,
+                signal: downloadAbortController.signal,
+                maxDownloadBytes: maxUploadBytes
+            });
+
+            isDownloading = false;
+            downloadAbortController = null;
+
+            if (opSeq !== operationSeq || !isFeatureEnabled || !activeJobCredentials || activeJobCredentials.jobId !== jobId) {
+                return;
+            }
+
             if (!res.success) {
                 if (res.statusCode === 410 || res.code === "MEDIA_EXPIRED") {
                     clearActiveJob();
                 } else if (el.downloadBtn) {
                     el.downloadBtn.disabled = false;
                 }
-                setStatus(res.message || "Download failed.", "error");
+                setStatus(res.message || "Download failed.", res.code === "ABORTED" ? "info" : "error");
                 return;
             }
 
@@ -381,9 +423,16 @@
                 setStatus("Download started.", "success");
             } finally {
                 if (objectUrl && win && win.URL && typeof win.URL.revokeObjectURL === "function") {
-                    win.URL.revokeObjectURL(objectUrl);
+                    const urlToRevoke = objectUrl;
+                    if (revokeDelayMs > 0) {
+                        setTimeout(() => {
+                            try { win.URL.revokeObjectURL(urlToRevoke); } catch (_) {}
+                        }, revokeDelayMs);
+                    } else {
+                        win.URL.revokeObjectURL(urlToRevoke);
+                    }
                 }
-                if (el.downloadBtn && activeJobCredentials) {
+                if (el.downloadBtn && activeJobCredentials && activeJobCredentials.jobId === jobId) {
                     el.downloadBtn.disabled = false;
                 }
             }
