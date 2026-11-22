@@ -88,10 +88,11 @@ async function createCdpClient(port) {
 
 function ffprobeInContainer(containerName, localFilePath) {
     const containerTmp = `/tmp/probe_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    try { fs.chmodSync(localFilePath, 0o644); } catch (_) {}
     execFileSync("docker", ["cp", localFilePath, `${containerName}:${containerTmp}`]);
     try {
         const out = execFileSync("docker", [
-            "exec", containerName,
+            "exec", "-u", "root", containerName,
             "/usr/local/bin/ffprobe",
             "-v", "error",
             "-show_format",
