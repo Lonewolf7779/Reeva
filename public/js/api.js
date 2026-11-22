@@ -299,12 +299,366 @@
         }
     }
 
+    // =========================================================================
+    // Phase 2B Media Workspace API Client
+    // =========================================================================
+    const ALLOWED_MEDIA_OPERATIONS = Object.freeze([
+        "compress",
+        "convert",
+        "extract_audio",
+        "trim",
+        "resize"
+    ]);
+
+    function isValidJobId(jobId) {
+        return typeof jobId === "string" && /^job_[a-f0-9]{32}$/.test(jobId);
+    }
+
+    /**
+     * Validates and constructs an allowlisted Phase 2B processing profile object.
+     *
+     * @param {string} operation
+     * @param {object} [rawOptions={}]
+     * @returns {{ ok: boolean, profile?: object, message?: string }}
+     */
+    function buildMediaProfile(operation, rawOptions = {}) {
+        const op = typeof operation === "string" ? operation.trim().toLowerCase() : "";
+        if (!ALLOWED_MEDIA_OPERATIONS.includes(op)) {
+            return { ok: false, message: "Please select a supported media operation." };
+        }
+
+        const opts = rawOptions && typeof rawOptions === "object" ? rawOptions : {};
+
+        if (op === "compress") {
+            const preset = typeof opts.preset === "string" ? opts.preset.trim().toLowerCase() : "balanced";
+            if (!["compact", "balanced", "high_quality"].includes(preset)) {
+                return { ok: false, message: "Invalid compression preset selected." };
+            }
+            return { ok: true, profile: { operation: "compress", options: { preset } } };
+        }
+
+        if (op === "convert") {
+            const format = typeof opts.format === "string" ? opts.format.trim().toLowerCase() : "mp4";
+            if (!["mp4", "webm", "mov"].includes(format)) {
+                return { ok: false, message: "Invalid conversion target format." };
+            }
+            return { ok: true, profile: { operation: "convert", options: { format, remux: Boolean(opts.remux) } } };
+        }
+
+        if (op === "extract_audio") {
+            const format = typeof opts.format === "string" ? opts.format.trim().toLowerCase() : "mp3";
+            if (!["mp3", "aac", "opus", "wav"].includes(format)) {
+                return { ok: false, message: "Invalid audio format selected." };
+            }
+            const options = { format };
+            if (format !== "wav" && typeof opts.bitrate === "string" && opts.bitrate.trim()) {
+                options.bitrate = opts.bitrate.trim().toLowerCase();
+            }
+            return { ok: true, profile: { operation: "extract_audio", options } };
+        }
+
+        if (op === "trim") {
+            const startSeconds = Number(opts.startSeconds ?? 0);
+            const endSeconds = Number(opts.endSeconds);
+            if (!Number.isFinite(startSeconds) || startSeconds < 0) {
+                return { ok: false, message: "Start time must be 0 or greater." };
+            }
+            if (!Number.isFinite(endSeconds) || endSeconds <= startSeconds) {
+                return { ok: false, message: "End time must be greater than start time." };
+            }
+            if ((endSeconds - startSeconds) > 1800) {
+                return { ok: false, message: "Trim duration cannot exceed 30 minutes (1800s)." };
+            }
+            const mode = typeof opts.mode === "string" && ["fast_copy", "accurate"].includes(opts.mode.trim().toLowerCase())
+                ? opts.mode.trim().toLowerCase()
+                : "fast_copy";
+            return { ok: true, profile: { operation: "trim", options: { startSeconds, endSeconds, mode } } };
+        }
+
+        // resize
+        const preset = typeof opts.preset === "string" ? opts.preset.trim().toLowerCase() : "portrait_1080x1920";
+        if (!["portrait_1080x1920", "square_1080x1080", "landscape_1920x1080", "hd_1280x720", "sd_854x480"].includes(preset)) {
+            return { ok: false, message: "Invalid resize resolution preset." };
+        }
+        const fit = typeof opts.fit === "string" && ["contain", "cover"].includes(opts.fit.trim().toLowerCase())
+            ? opts.fit.trim().toLowerCase()
+            : "contain";
+        return { ok: true, profile: { operation: "resize", options: { preset, fit } } };
+    }
+
+    /**
+     * Submits a multipart media processing job to POST /api/media/jobs.
+     * Supports XHR upload progress events when available, falling back to fetch.
+     */
+    async function submitMediaJob({ file, profile, onProgress, signal, fetchFn, xhrFactory } = {}) {
+        if (!file) {
+            return { success: false, code: "MISSING_FILE", message: "Please select a media file first." };
+        }
+        if (!profile || typeof profile !== "object") {
+            return { success: false, code: "INVALID_PROFILE", message: "Invalid processing profile." };
+        }
+
+        const FormDataCtor = typeof FormData !== "undefined" ? FormData : null;
+        if (!FormDataCtor) {
+            return { success: false, code: "FORMDATA_UNAVAILABLE", message: "Multipart upload is not supported in this environment." };
+        }
+
+        const formData = new FormDataCtor();
+        formData.append("profile", JSON.stringify(profile));
+        formData.append("file", file);
+
+        const XhrCtor = xhrFactory || (typeof XMLHttpRequest !== "undefined" ? XMLHttpRequest : null);
+        if (XhrCtor && typeof onProgress === "function") {
+            return new Promise((resolve) => {
+                const xhr = new XhrCtor();
+                let abortListener = null;
+
+                const cleanupAbort = () => {
+                    if (signal && abortListener) {
+                        try { signal.removeEventListener("abort", abortListener); } catch (_) {}
+                        abortListener = null;
+                    }
+                };
+
+                if (signal) {
+                    if (signal.aborted) {
+                        return resolve({ success: false, code: "ABORTED", message: "Upload cancelled." });
+                    }
+                    abortListener = () => {
+                        try { xhr.abort(); } catch (_) {}
+                    };
+                    signal.addEventListener("abort", abortListener, { once: true });
+                }
+
+                xhr.open("POST", "/api/media/jobs", true);
+                xhr.setRequestHeader("Accept", "application/json");
+
+                if (xhr.upload && typeof xhr.upload.addEventListener === "function") {
+                    xhr.upload.addEventListener("progress", (evt) => {
+                        if (evt && evt.lengthComputable && evt.total > 0) {
+                            onProgress(Math.min(100, Math.round((evt.loaded / evt.total) * 100)));
+                        }
+                    });
+                }
+
+                xhr.onload = () => {
+                    cleanupAbort();
+                    let data = null;
+                    try { data = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
+
+                    if (xhr.status < 200 || xhr.status >= 300) {
+                        return resolve({
+                            success: false,
+                            statusCode: xhr.status,
+                            code: (data && data.error && data.error.code) || "UPLOAD_FAILED",
+                            message: (data && data.error && data.error.message) || "Failed to submit media processing job."
+                        });
+                    }
+
+                    if (!data || !data.job || !isValidJobId(data.job.jobId) || typeof data.capabilityToken !== "string" || !data.capabilityToken) {
+                        return resolve({
+                            success: false,
+                            code: "INVALID_RESPONSE",
+                            message: "Server returned an invalid job response."
+                        });
+                    }
+
+                    return resolve({
+                        success: true,
+                        job: data.job,
+                        capabilityToken: data.capabilityToken
+                    });
+                };
+
+                xhr.onerror = () => {
+                    cleanupAbort();
+                    resolve({ success: false, code: "NETWORK_ERROR", message: "Network error during upload." });
+                };
+
+                xhr.onabort = () => {
+                    cleanupAbort();
+                    resolve({ success: false, code: "ABORTED", message: "Upload cancelled." });
+                };
+
+                xhr.send(formData);
+            });
+        }
+
+        const effectiveFetch = fetchFn || (typeof fetch !== "undefined" ? fetch : null);
+        if (!effectiveFetch) {
+            return { success: false, code: "FETCH_UNAVAILABLE", message: "HTTP client is not available." };
+        }
+
+        try {
+            const opts = {
+                method: "POST",
+                headers: { "Accept": "application/json" },
+                body: formData
+            };
+            if (signal) opts.signal = signal;
+            const resp = await effectiveFetch("/api/media/jobs", opts);
+            let data = null;
+            try { data = await resp.json(); } catch (_) {}
+
+            if (!resp.ok) {
+                return {
+                    success: false,
+                    statusCode: resp.status,
+                    code: (data && data.error && data.error.code) || "UPLOAD_FAILED",
+                    message: (data && data.error && data.error.message) || "Failed to submit media processing job."
+                };
+            }
+
+            if (!data || !data.job || !isValidJobId(data.job.jobId) || typeof data.capabilityToken !== "string" || !data.capabilityToken) {
+                return { success: false, code: "INVALID_RESPONSE", message: "Server returned an invalid job response." };
+            }
+
+            if (typeof onProgress === "function") onProgress(100);
+            return { success: true, job: data.job, capabilityToken: data.capabilityToken };
+        } catch (err) {
+            if (err && (err.name === "AbortError" || err.code === 20)) {
+                return { success: false, code: "ABORTED", message: "Upload cancelled." };
+            }
+            return { success: false, code: "NETWORK_ERROR", message: "Network error during upload." };
+        }
+    }
+
+    async function getMediaJobStatus(jobId, capabilityToken, options = {}) {
+        if (!isValidJobId(jobId) || !capabilityToken) {
+            return { success: false, code: "INVALID_JOB", message: "Invalid job credentials." };
+        }
+        const effectiveFetch = options.fetchFn || (typeof fetch !== "undefined" ? fetch : null);
+        if (!effectiveFetch) {
+            return { success: false, code: "FETCH_UNAVAILABLE", message: "HTTP client is not available." };
+        }
+
+        try {
+            const fetchOpts = {
+                headers: {
+                    "Accept": "application/json",
+                    "Authorization": `Bearer ${capabilityToken}`
+                }
+            };
+            if (options.signal) fetchOpts.signal = options.signal;
+
+            const resp = await effectiveFetch(`/api/media/jobs/${encodeURIComponent(jobId)}`, fetchOpts);
+            let data = null;
+            try { data = await resp.json(); } catch (_) {}
+
+            if (!resp.ok) {
+                return {
+                    success: false,
+                    statusCode: resp.status,
+                    code: (data && data.error && data.error.code) || "STATUS_ERROR",
+                    message: (data && data.error && data.error.message) || "Failed to check job status."
+                };
+            }
+
+            if (!data || !data.job || !isValidJobId(data.job.jobId)) {
+                return { success: false, code: "INVALID_RESPONSE", message: "Invalid job status payload." };
+            }
+
+            return { success: true, job: data.job };
+        } catch (err) {
+            if (err && (err.name === "AbortError" || err.code === 20)) {
+                return { success: false, code: "ABORTED", message: "Status check cancelled." };
+            }
+            return { success: false, code: "NETWORK_ERROR", message: "Network error checking job status." };
+        }
+    }
+
+    async function cancelMediaJob(jobId, capabilityToken, options = {}) {
+        if (!isValidJobId(jobId) || !capabilityToken) {
+            return { success: false, code: "INVALID_JOB", message: "Invalid job credentials." };
+        }
+        const effectiveFetch = options.fetchFn || (typeof fetch !== "undefined" ? fetch : null);
+        if (!effectiveFetch) {
+            return { success: false, code: "FETCH_UNAVAILABLE", message: "HTTP client is not available." };
+        }
+
+        try {
+            const resp = await effectiveFetch(`/api/media/jobs/${encodeURIComponent(jobId)}/cancel`, {
+                method: "POST",
+                headers: {
+                    "Accept": "application/json",
+                    "Authorization": `Bearer ${capabilityToken}`
+                }
+            });
+            let data = null;
+            try { data = await resp.json(); } catch (_) {}
+
+            if (!resp.ok) {
+                return {
+                    success: false,
+                    statusCode: resp.status,
+                    code: (data && data.error && data.error.code) || "CANCEL_ERROR",
+                    message: (data && data.error && data.error.message) || "Failed to cancel job."
+                };
+            }
+
+            return { success: true, job: data && data.job };
+        } catch (_) {
+            return { success: false, code: "NETWORK_ERROR", message: "Network error cancelling job." };
+        }
+    }
+
+    async function fetchMediaJobOutputBlob(jobId, capabilityToken, options = {}) {
+        if (!isValidJobId(jobId) || !capabilityToken) {
+            return { success: false, code: "INVALID_JOB", message: "Invalid job credentials." };
+        }
+        const effectiveFetch = options.fetchFn || (typeof fetch !== "undefined" ? fetch : null);
+        if (!effectiveFetch) {
+            return { success: false, code: "FETCH_UNAVAILABLE", message: "HTTP client is not available." };
+        }
+
+        try {
+            const fetchOpts = {
+                headers: {
+                    "Authorization": `Bearer ${capabilityToken}`
+                }
+            };
+            if (options.signal) fetchOpts.signal = options.signal;
+
+            const resp = await effectiveFetch(`/api/media/jobs/${encodeURIComponent(jobId)}/output?download=1`, fetchOpts);
+            if (!resp.ok) {
+                let data = null;
+                try { data = await resp.json(); } catch (_) {}
+                return {
+                    success: false,
+                    statusCode: resp.status,
+                    code: (data && data.error && data.error.code) || (resp.status === 410 ? "MEDIA_EXPIRED" : "DOWNLOAD_FAILED"),
+                    message: (data && data.error && data.error.message) || (resp.status === 410 ? "Processed media has expired." : "Failed to download processed output.")
+                };
+            }
+
+            const blob = await resp.blob();
+            const disp = resp.headers && typeof resp.headers.get === "function"
+                ? (resp.headers.get("content-disposition") || "")
+                : "";
+            const match = disp.match(/filename="([^"]+)"/i);
+            const filename = match ? match[1] : "reeva_processed_media";
+
+            return { success: true, blob, filename };
+        } catch (err) {
+            if (err && (err.name === "AbortError" || err.code === 20)) {
+                return { success: false, code: "ABORTED", message: "Download cancelled." };
+            }
+            return { success: false, code: "NETWORK_ERROR", message: "Network error downloading output." };
+        }
+    }
+
     return {
         isValidMediaUrl,
         isValidEmbedUrl,
+        isValidJobId,
         buildDownloadUrl,
         buildEmbedUrl,
         fetchMedia,
-        fetchEmbed
+        fetchEmbed,
+        buildMediaProfile,
+        submitMediaJob,
+        getMediaJobStatus,
+        cancelMediaJob,
+        fetchMediaJobOutputBlob
     };
 });

@@ -223,6 +223,144 @@
         </aside>
     </div>
 
+            <!-- Phase 3: Creator Media Workspace (Feature-Gated) -->
+            <section id="media-workspace" class="widget-card media-workspace-card workspace-disabled" aria-labelledby="media-workspace-title">
+                <div class="workspace-header">
+                    <div>
+                        <span class="section-label">Creator Media Utility</span>
+                        <h2 id="media-workspace-title" class="widget-heading">Media Processing Workspace</h2>
+                    </div>
+                    <p id="workspace-availability" class="workspace-availability disabled" role="status" aria-live="polite">
+                        Media Workspace is currently disabled on this server.
+                    </p>
+                </div>
+
+                <form id="workspace-form" class="workspace-form" novalidate>
+                    <div class="workspace-grid">
+                        <div class="workspace-field">
+                            <label for="workspace-file" class="workspace-label">1. Choose Your Media File</label>
+                            <input id="workspace-file" class="workspace-input" type="file" accept="video/*,audio/*,.mp4,.mov,.webm,.mkv,.avi,.mp3,.wav,.m4a,.opus,.flac" disabled aria-disabled="true" />
+                            <p id="workspace-file-meta" class="workspace-hint">Supported containers: MP4, MOV, WebM, MKV, AVI, MP3, WAV, M4A, Opus, FLAC.</p>
+                        </div>
+
+                        <div class="workspace-field">
+                            <label for="workspace-operation" class="workspace-label">2. Operation</label>
+                            <select id="workspace-operation" class="workspace-select" disabled>
+                                <option value="compress">Compress Video</option>
+                                <option value="convert">Convert Format</option>
+                                <option value="extract_audio">Extract Audio</option>
+                                <option value="trim">Trim Video</option>
+                                <option value="resize">Resize / Aspect Ratio</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="workspace-opt-compress" class="workspace-options-panel">
+                        <label for="workspace-compress-preset" class="workspace-label">Compression Quality</label>
+                        <select id="workspace-compress-preset" class="workspace-select">
+                            <option value="balanced">Balanced (Recommended)</option>
+                            <option value="compact">Compact (Smallest Size)</option>
+                            <option value="high_quality">High Quality</option>
+                        </select>
+                    </div>
+
+                    <div id="workspace-opt-convert" class="workspace-options-panel hidden">
+                        <div class="workspace-grid">
+                            <div class="workspace-field">
+                                <label for="workspace-convert-format" class="workspace-label">Target Format</label>
+                                <select id="workspace-convert-format" class="workspace-select">
+                                    <option value="mp4">MP4 (H.264 / AAC)</option>
+                                    <option value="webm">WebM (VP9 / Opus)</option>
+                                    <option value="mov">MOV (H.264 / AAC)</option>
+                                </select>
+                            </div>
+                            <label class="workspace-checkbox-row" for="workspace-convert-remux">
+                                <input id="workspace-convert-remux" type="checkbox" />
+                                <span>Fast stream copy (remux when codecs match)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="workspace-opt-audio" class="workspace-options-panel hidden">
+                        <div class="workspace-grid">
+                            <div class="workspace-field">
+                                <label for="workspace-audio-format" class="workspace-label">Audio Format</label>
+                                <select id="workspace-audio-format" class="workspace-select">
+                                    <option value="mp3">MP3</option>
+                                    <option value="aac">AAC (M4A)</option>
+                                    <option value="opus">Opus</option>
+                                    <option value="wav">WAV (Lossless PCM)</option>
+                                </select>
+                            </div>
+                            <div class="workspace-field">
+                                <label for="workspace-audio-bitrate" class="workspace-label">Audio Bitrate</label>
+                                <select id="workspace-audio-bitrate" class="workspace-select">
+                                    <option value="192k">192 kbps</option>
+                                    <option value="128k">128 kbps</option>
+                                    <option value="320k">320 kbps (MP3 only)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="workspace-opt-trim" class="workspace-options-panel hidden">
+                        <div class="workspace-grid">
+                            <div class="workspace-field">
+                                <label for="workspace-trim-start" class="workspace-label">Start (seconds)</label>
+                                <input id="workspace-trim-start" class="workspace-input" type="number" min="0" step="0.1" value="0" />
+                            </div>
+                            <div class="workspace-field">
+                                <label for="workspace-trim-end" class="workspace-label">End (seconds)</label>
+                                <input id="workspace-trim-end" class="workspace-input" type="number" min="0.1" step="0.1" placeholder="e.g. 15" />
+                            </div>
+                            <div class="workspace-field">
+                                <label for="workspace-trim-mode" class="workspace-label">Trim Mode</label>
+                                <select id="workspace-trim-mode" class="workspace-select">
+                                    <option value="fast_copy">Fast Keyframe Copy</option>
+                                    <option value="accurate">Frame-Accurate Re-encode</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="workspace-opt-resize" class="workspace-options-panel hidden">
+                        <div class="workspace-grid">
+                            <div class="workspace-field">
+                                <label for="workspace-resize-preset" class="workspace-label">Target Dimensions</label>
+                                <select id="workspace-resize-preset" class="workspace-select">
+                                    <option value="portrait_1080x1920">1080×1920 (9:16 Vertical)</option>
+                                    <option value="square_1080x1080">1080×1080 (1:1 Square)</option>
+                                    <option value="landscape_1920x1080">1920×1080 (16:9 Full HD)</option>
+                                    <option value="hd_1280x720">1280×720 (16:9 HD)</option>
+                                    <option value="sd_854x480">854×480 (16:9 SD)</option>
+                                </select>
+                            </div>
+                            <div class="workspace-field">
+                                <label for="workspace-resize-fit" class="workspace-label">Fit Mode</label>
+                                <select id="workspace-resize-fit" class="workspace-select">
+                                    <option value="contain">Contain (Letterbox / Pad)</option>
+                                    <option value="cover">Cover (Center Crop)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="workspace-actions">
+                        <button id="workspace-submit" class="action" type="submit" disabled aria-disabled="true">Process Media</button>
+                        <button id="workspace-cancel" class="action action-secondary hidden" type="button" disabled>Cancel</button>
+                        <button id="workspace-download" class="action hidden" type="button" disabled>Download Output</button>
+                    </div>
+
+                    <div id="workspace-progress-wrap" class="workspace-progress-wrap hidden">
+                        <progress id="workspace-progress" class="workspace-progress" max="100" value="0"></progress>
+                    </div>
+
+                    <div id="workspace-status" class="workspace-status status-info" role="status" aria-live="polite">
+                        Media processing is unavailable until enabled on the server.
+                    </div>
+                </form>
+            </section>
+
             <!-- Supporting Information Grid -->
             <div class="supporting-grid">
                 <!-- How It Works Module -->
@@ -347,6 +485,7 @@
     <script src="/js/ui.js" defer></script>
     <script src="/js/anime.min.js" defer></script>
     <script src="/js/companion.js" defer></script>
+    <script src="/js/workspace.js" defer></script>
     <script src="/app.js" defer></script>
 </body>
 

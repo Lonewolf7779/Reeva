@@ -85,6 +85,14 @@ function createAppController(options = {}) {
                     companionLib.initCompanion("anime-companion-root", { initialLanguage: initialLang });
     }
 
+    // =========================================================================
+    // 0b. Media Workspace Initialization (Feature-Gated)
+    // =========================================================================
+    const workspaceLib = options.workspaceLib || (win && win.Reeva && win.Reeva.workspace) || null;
+    const workspaceController = workspaceLib && typeof workspaceLib.createWorkspaceController === "function"
+        ? workspaceLib.createWorkspaceController(doc, { api, window: win, fetchFn })
+        : null;
+
     if (elements.langSelect) {
         elements.langSelect.addEventListener("change", (e) => {
             const selectedLang = e.target.value;
@@ -192,6 +200,9 @@ function createAppController(options = {}) {
                 });
             }
             ui.setActivePlatform("");
+            if (workspaceController) {
+                workspaceController.setAvailability(false);
+            }
             ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
             return false;
         }
@@ -225,6 +236,9 @@ function createAppController(options = {}) {
             verifiedPlatforms = caps.platforms;
             if (Array.isArray(caps.embedPlatforms)) {
                 verifiedEmbedPlatforms = caps.embedPlatforms;
+            }
+            if (workspaceController) {
+                workspaceController.setAvailability(Boolean(caps.mediaProcessing), caps.maxMediaUploadBytes);
             }
 
             let firstAvailable = null;
@@ -291,6 +305,9 @@ function createAppController(options = {}) {
                 });
             }
             ui.setActivePlatform("");
+            if (workspaceController) {
+                workspaceController.setAvailability(false);
+            }
             ui.setLog("Unable to verify available services. Please refresh to try again.", "error");
             return false;
         }
