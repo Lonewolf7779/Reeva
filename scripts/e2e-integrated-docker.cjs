@@ -41,15 +41,17 @@ function findChromeBinary() {
 
 async function createCdpClient(port) {
     let version = null;
-    for (let i = 0; i < 30; i++) {
+    let lastErr = null;
+    for (let i = 0; i < 40; i++) {
         try {
             version = await getJson(`http://127.0.0.1:${port}/json/version`);
             break;
-        } catch (_) {
-            await delay(250);
+        } catch (err) {
+            lastErr = err;
+            await delay(300);
         }
     }
-    if (!version) throw new Error(`CDP endpoint did not start on port ${port}`);
+    if (!version) throw new Error(`CDP endpoint did not start on port ${port} (lastErr: ${lastErr && lastErr.message})`);
 
     const targets = await getJson(`http://127.0.0.1:${port}/json/list`);
     const pageTarget = targets.find((t) => t.type === "page") || targets[0];
@@ -145,7 +147,7 @@ async function run() {
     }
     chromeArgs.push("about:blank");
 
-    console.log("Launching browser:", chromeBin);
+    console.log("Launching browser:", chromeBin, execFileSync(chromeBin, ["--version"], { encoding: "utf8" }).trim());
     const browserProc = spawn(chromeBin, chromeArgs, { stdio: ["ignore", "pipe", "pipe"] });
     let browserStderr = "";
     browserProc.stdout.on("data", (d) => {
