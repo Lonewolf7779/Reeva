@@ -382,3 +382,163 @@ test("4. HTTP integration: full POST -> status -> output delivery -> cancel via 
         removeDir(tmpDir);
     }
 });
+
+test("5. Adversarial multipart: split chunks, prototype pollution, duplicate fields, multiple files, stalled upload", async () => {
+    const tmpDir = createTempDir();
+    try {
+        const fakeMp4 = Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from("ftypisom"), Buffer.alloc(64)]);
+        const boundary = "----AdvBoundary123";
+
+        // A. Boundary split across arbitrary 3-byte chunks + no Content-Length
+        const splitBody = buildMultipartBody(boundary, [
+            { name: "profile", data: JSON.stringify({ operation: "compress" }) },
+            { name: "file", filename: "chunked.mp4", contentType: "video/mp4", data: fakeMp4 }
+        ]);
+        const splitReq = new PassThrough();
+        splitReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(async () => {
+            for (let i = 0; i < splitBody.length; i += 3) {
+                splitReq.write(splitBody.subarray(i, i + 3));
+                await new Promise((r) => setTimeout(r, 1));
+            }
+            splitReq.end();
+        });
+        const splitOut = await receiveStreamingMediaUpload(splitReq, {
+            baseDir: tmpDir,
+            ffprobePath: process.execPath,
+            spawnFn: createFakeFfprobeSpawn(JSON.stringify({
+                format: { format_name: "mp4" },
+                streams: [{ codec_type: "video", codec_name: "h264" }]
+            }))
+        });
+        assert.equal(splitOut.sizeBytes, fakeMp4.length);
+        fs.unlinkSync(splitOut.uploadPath);
+
+        // B. Prototype pollution (__proto__) rejected
+        const protoBody = buildMultipartBody(boundary, [
+            { name: "__proto__", data: "polluted" },
+            { name: "file", filename: "a.mp4", contentType: "video/mp4", data: fakeMp4 }
+        ]);
+        const protoReq = new PassThrough();
+        protoReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(() => protoReq.end(protoBody));
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(protoReq, { baseDir: tmpDir }),
+            (err) => err.code === "INVALID_ARGUMENTS"
+        );
+
+        // C. Duplicate field name rejected
+        const dupFieldBody = buildMultipartBody(boundary, [
+            { name: "profile", data: "{}" },
+            { name: "profile", data: "{}" },
+            { name: "file", filename: "a.mp4", contentType: "video/mp4", data: fakeMp4 }
+        ]);
+        const dupReq = new PassThrough();
+        dupReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(() => dupReq.end(dupFieldBody));
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(dupReq, { baseDir: tmpDir }),
+            (err) => err.code === "INVALID_ARGUMENTS"
+        );
+        assert.equal(fs.readdirSync(tmpDir).length, 0);
+
+        // D. Multiple file parts rejected and first file cleaned up
+        const multiFileBody = buildMultipartBody(boundary, [
+            { name: "file", filename: "a.mp4", contentType: "video/mp4", data: fakeMp4 },
+            { name: "file2", filename: "b.mp4", contentType: "video/mp4", data: fakeMp4 }
+        ]);
+        const multiReq = new PassThrough();
+        multiReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(() => multiReq.end(multiFileBody));
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(multiReq, { baseDir: tmpDir }),
+            (err) => err.code === "INVALID_ARGUMENTS"
+        );
+        assert.equal(fs.readdirSync(tmpDir).length, 0);
+
+        // E. Oversized metadata field rejected
+        const bigMetaBody = buildMultipartBody(boundary, [
+            { name: "profile", data: "x".repeat(20 * 1024) },
+            { name: "file", filename: "a.mp4", contentType: "video/mp4", data: fakeMp4 }
+        ]);
+        const bigMetaReq = new PassThrough();
+        bigMetaReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(() => bigMetaReq.end(bigMetaBody));
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(bigMetaReq, { baseDir: tmpDir }),
+            (err) => err.code === "INVALID_ARGUMENTS"
+        );
+
+        // F. Truncated upload without closing boundary rejected and cleaned up
+        const truncReq = new PassThrough();
+        truncReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        setImmediate(() => truncReq.end(splitBody.subarray(0, splitBody.length - 10)));
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(truncReq, { baseDir: tmpDir }),
+            (err) => err.code === "INVALID_ARGUMENTS"
+        );
+        assert.equal(fs.readdirSync(tmpDir).length, 0);
+
+        // G. Stalled upload (Slowloris) triggers uploadIdleTimeoutMs and cleans up
+        const stallReq = new PassThrough();
+        stallReq.headers = { "content-type": `multipart/form-data; boundary=${boundary}` };
+        stallReq.write(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="s.mp4"\r\n\r\n`);
+        await assert.rejects(
+            () => receiveStreamingMediaUpload(stallReq, { baseDir: tmpDir, uploadIdleTimeoutMs: 60 }),
+            (err) => err.code === "EXECUTION_TIMEOUT" && err.statusCode === 408
+        );
+        assert.equal(fs.readdirSync(tmpDir).length, 0);
+    } finally {
+        removeDir(tmpDir);
+    }
+});
+
+test("6. Adversarial lifecycle: expiration during active stream lease, capacity cap, and unrelated file isolation", async () => {
+    const tmpDir = createTempDir();
+    const registry = new MediaRegistry(50, 5000);
+    const limiter = createProcessingLimiter(2);
+    const manager = new MediaJobManager({
+        maxJobs: 2,
+        mediaRegistry: registry,
+        limiter,
+        retentionMs: 80,
+        sweepIntervalMs: 60000,
+        processMediaFn: async ({ profile }) => {
+            const outPath = path.join(tmpDir, `lease_out_${Date.now()}_${Math.random().toString(16).slice(2)}.mp4`);
+            fs.writeFileSync(outPath, "stream-lease-protected-bytes");
+            return { outputPath: outPath, outputSizeBytes: 28, operation: profile.operation, outputExt: "mp4" };
+        }
+    });
+
+    const unrelatedFile = path.join(tmpDir, "unrelated_keep.txt");
+    fs.writeFileSync(unrelatedFile, "do-not-delete");
+
+    try {
+        const up1 = path.join(tmpDir, "upl_lease.bin");
+        fs.writeFileSync(up1, "raw");
+        const j1 = await manager.createJob({ uploadPath: up1, profile: { operation: "compress" } });
+
+        for (let i = 0; i < 20; i++) {
+            if (manager.getJobStatus(j1.job.jobId, j1.capabilityToken).status === JOB_STATES.COMPLETED) break;
+            await new Promise((r) => setTimeout(r, 15));
+        }
+
+        const entry = manager.getCompletedMediaEntry(j1.job.jobId, j1.capabilityToken);
+        const lease = registry.acquireStreamLease(entry.id);
+        assert.ok(lease, "Stream lease must be acquired");
+
+        // Expire job while stream lease is active
+        await new Promise((r) => setTimeout(r, 100));
+        await manager.sweepExpired();
+        assert.equal(fs.existsSync(entry.localFilePath), true, "Active stream lease must defer file deletion");
+
+        // Releasing stream lease triggers deferred cleanup
+        lease.release();
+        assert.equal(fs.existsSync(entry.localFilePath), false, "Deferred cleanup must unlink file after stream closes");
+        assert.equal(fs.existsSync(unrelatedFile), true, "Unrelated files must never be deleted");
+    } finally {
+        await manager.shutdown();
+        registry.destroy();
+        removeDir(tmpDir);
+    }
+});
