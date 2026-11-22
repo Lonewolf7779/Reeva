@@ -384,3 +384,106 @@ test("12. probeMediaFile parses valid ffprobe JSON and rejects malformed output"
         cleanupWorkspace(tmpDir);
     }
 });
+
+test("13. Input/output path overlap, output collision, empty input, and size limits are rejected", async () => {
+    const tmpDir = createTempWorkspace();
+    try {
+        const inputFile = path.join(tmpDir, "clip.mp4");
+        fs.writeFileSync(inputFile, "valid-input-bytes");
+
+        // Overlap: outputFileName matches input filename
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: inputFile, outputFileName: "clip.mp4", profile: { operation: "compress" } },
+                { baseDir: tmpDir, ffmpegPath: process.execPath }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.INVALID_ARGUMENTS
+        );
+        assert.equal(fs.readFileSync(inputFile, "utf8"), "valid-input-bytes");
+
+        // Collision: outputFileName already exists
+        const existingOut = path.join(tmpDir, "existing.mp4");
+        fs.writeFileSync(existingOut, "do-not-overwrite");
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: inputFile, outputFileName: "existing.mp4", profile: { operation: "compress" } },
+                { baseDir: tmpDir, ffmpegPath: process.execPath }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.STORAGE_ERROR && err.statusCode === 409
+        );
+        assert.equal(fs.readFileSync(existingOut, "utf8"), "do-not-overwrite");
+
+        // Empty 0-byte input rejected
+        const emptyFile = path.join(tmpDir, "empty.mp4");
+        fs.writeFileSync(emptyFile, "");
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: emptyFile, profile: { operation: "compress" } },
+                { baseDir: tmpDir, ffmpegPath: process.execPath }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.INPUT_NOT_FOUND
+        );
+
+        // Input too large rejected
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: inputFile, profile: { operation: "compress" } },
+                { baseDir: tmpDir, ffmpegPath: process.execPath, maxInputBytes: 4 }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.INPUT_TOO_LARGE
+        );
+
+        // Output too large rejected and cleaned up
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: inputFile, outputFileName: "oversized.mp4", profile: { operation: "compress" } },
+                {
+                    baseDir: tmpDir,
+                    ffmpegPath: process.execPath,
+                    maxOutputBytes: 5,
+                    spawnFn: (_cmd, args) => {
+                        fs.writeFileSync(args[args.length - 1], "1234567890");
+                        return createFakeProc({ exitCode: 0, delayMs: 5 });
+                    }
+                }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.OUTPUT_TOO_LARGE
+        );
+        assert.equal(fs.existsSync(path.join(tmpDir, "oversized.mp4")), false);
+    } finally {
+        cleanupWorkspace(tmpDir);
+    }
+});
+
+test("14. Cancellation during processMedia cleans up partial output and releases concurrency slot", async () => {
+    const tmpDir = createTempWorkspace();
+    try {
+        const inputFile = path.join(tmpDir, "input.mp4");
+        fs.writeFileSync(inputFile, "dummy-video-bytes");
+        const limiter = createProcessingLimiter(1);
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 40);
+
+        await assert.rejects(
+            () => processMedia(
+                { inputPath: inputFile, outputFileName: "aborted.mp4", profile: { operation: "compress" } },
+                {
+                    baseDir: tmpDir,
+                    ffmpegPath: process.execPath,
+                    limiter,
+                    signal: controller.signal,
+                    spawnFn: (cmd, args, opts) => {
+                        fs.writeFileSync(args[args.length - 1], "partial-bytes");
+                        return require("child_process").spawn(cmd, ["-e", "setTimeout(() => {}, 5000)"], opts);
+                    }
+                }
+            ),
+            (err) => err.code === MEDIA_PROCESSOR_ERROR_CODES.PROCESS_ABORTED
+        );
+
+        assert.equal(fs.existsSync(path.join(tmpDir, "aborted.mp4")), false);
+        assert.equal(limiter.getActiveCount(), 0);
+    } finally {
+        cleanupWorkspace(tmpDir);
+    }
+});

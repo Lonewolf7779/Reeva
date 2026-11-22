@@ -100,6 +100,19 @@ jobs:
           docker exec "${CONTAINER_NAME}" test -d /var/reeva/media
           docker exec "${CONTAINER_NAME}" test -w /var/reeva/media
 
+      - name: Run real FFmpeg & ffprobe integration tests inside Docker container
+        run: |
+          set -euo pipefail
+          docker exec "${CONTAINER_NAME}" mkdir -p /app/scripts
+          docker cp scripts/test-ffmpeg-docker.cjs "${CONTAINER_NAME}:/app/scripts/test-ffmpeg-docker.cjs"
+          docker exec "${CONTAINER_NAME}" node /app/scripts/test-ffmpeg-docker.cjs
+          docker exec "${CONTAINER_NAME}" rm -rf /app/scripts
+          # Verify no orphaned ffmpeg/ffprobe processes remain in container
+          if docker exec "${CONTAINER_NAME}" sh -c 'grep -l "ffmpeg\|ffprobe" /proc/[0-9]*/comm 2>/dev/null'; then
+            echo "ERROR: Orphaned ffmpeg/ffprobe process detected after integration tests." >&2
+            exit 1
+          fi
+
       - name: Wait for GET /health and GET /ready to succeed
         run: |
           set -euo pipefail
