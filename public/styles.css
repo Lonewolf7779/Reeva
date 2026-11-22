@@ -2068,3 +2068,147 @@ footer, .site-footer {
         animation: none !important;
     }
 }
+
+/* ==========================================================================
+   Phase 3: Creator Media Workspace
+   ========================================================================== */
+.media-workspace-card {
+    margin-top: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.workspace-disabled {
+    opacity: 0.78;
+}
+
+.workspace-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.workspace-availability {
+    font-size: 0.85rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+}
+
+.workspace-availability.available {
+    color: var(--status-success);
+    border-color: var(--status-success);
+}
+
+.workspace-form {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.workspace-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0.85rem;
+}
+
+.workspace-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.workspace-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.workspace-input,
+.workspace-select {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--input-border);
+    border-radius: var(--radius-md);
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+}
+
+.workspace-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.workspace-options-panel {
+    padding: 0.85rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+}
+
+.workspace-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    align-self: end;
+    padding-bottom: 0.45rem;
+}
+
+.workspace-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+}
+
+.action-secondary {
+    background: var(--btn-secondary-bg);
+    color: var(--btn-secondary-text);
+    border: 1px solid var(--btn-secondary-border);
+}
+
+.workspace-progress-wrap {
+    width: 100%;
+}
+
+.workspace-progress {
+    width: 100%;
+    height: 8px;
+    border-radius: var(--radius-sm);
+    accent-color: var(--progress-fill);
+}
+
+.workspace-status {
+    font-size: 0.88rem;
+    min-height: 1.25rem;
+}
+
+.workspace-status.status-info {
+    color: var(--status-info);
+}
+
+.workspace-status.status-success {
+    color: var(--status-success);
+}
+
+.workspace-status.status-error {
+    color: var(--status-error);
+}
+
+@media (max-width: 768px) {
+    .workspace-header {
+        flex-direction: column;
+    }
+
+    .workspace-actions .action {
+        width: 100%;
+    }
+}
