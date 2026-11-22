@@ -135,6 +135,8 @@ async function run() {
         "--disable-gpu",
         "--no-first-run",
         "--no-default-browser-check",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
         `--user-data-dir=${userDataDir}`,
         `--remote-debugging-port=${cdpPort}`
     ];
@@ -144,10 +146,16 @@ async function run() {
     chromeArgs.push("about:blank");
 
     console.log("Launching browser:", chromeBin);
-    const browserProc = spawn(chromeBin, chromeArgs, { stdio: ["ignore", "ignore", "pipe"] });
+    const browserProc = spawn(chromeBin, chromeArgs, { stdio: ["ignore", "pipe", "pipe"] });
     let browserStderr = "";
+    browserProc.stdout.on("data", (d) => {
+        if (browserStderr.length < 4096) browserStderr += d.toString();
+    });
     browserProc.stderr.on("data", (d) => {
         if (browserStderr.length < 4096) browserStderr += d.toString();
+    });
+    browserProc.on("exit", (code, sig) => {
+        console.log("Browser exited early:", code, sig);
     });
     const report = {
         browser: "",
