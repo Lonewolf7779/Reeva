@@ -63,9 +63,6 @@ jobs:
       - name: Run full automated test suite on Node.js 24
         run: npm test
 
-      - name: Run npm security audit against committed lockfile
-        run: npm audit --audit-level=low
-
       - name: Build production container image (linux/amd64)
         run: |
           set -euo pipefail
@@ -99,6 +96,19 @@ jobs:
           docker exec "${CONTAINER_NAME}" /usr/local/bin/ffmpeg -version
           docker exec "${CONTAINER_NAME}" test -d /var/reeva/media
           docker exec "${CONTAINER_NAME}" test -w /var/reeva/media
+
+      - name: Run real FFmpeg & ffprobe integration tests inside Docker container
+        run: |
+          set -euo pipefail
+          docker exec "${CONTAINER_NAME}" mkdir -p /app/scripts
+          docker cp scripts/test-ffmpeg-docker.cjs "${CONTAINER_NAME}:/app/scripts/test-ffmpeg-docker.cjs"
+          docker exec "${CONTAINER_NAME}" node /app/scripts/test-ffmpeg-docker.cjs
+          docker exec "${CONTAINER_NAME}" rm -rf /app/scripts
+          # Verify no orphaned ffmpeg/ffprobe processes remain in container
+          if docker exec "${CONTAINER_NAME}" sh -c 'grep -l "ffmpeg\|ffprobe" /proc/[0-9]*/comm 2>/dev/null'; then
+            echo "ERROR: Orphaned ffmpeg/ffprobe process detected after integration tests." >&2
+            exit 1
+          fi
 
       - name: Wait for GET /health and GET /ready to succeed
         run: |
@@ -216,6 +226,9 @@ jobs:
           cat /tmp/reeva_container.log
           grep -q "Received SIGTERM. Starting graceful shutdown..." /tmp/reeva_container.log
           grep -q "Graceful shutdown completed successfully." /tmp/reeva_container.log
+
+      - name: Run npm security audit against committed lockfile
+        run: npm audit --audit-level=low
 
       - name: Collect container diagnostics on failure
         if: failure()
